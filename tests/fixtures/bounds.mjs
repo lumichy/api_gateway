@@ -1,0 +1,1 @@
+const args=process.argv.slice(2);if(args.includes('auth')){for(let i=0;i<100;i++)console.log('x'.repeat(1024));}else console.log('x'.repeat(1100000));

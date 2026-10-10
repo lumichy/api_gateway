@@ -1,0 +1,31 @@
+{
+  "demoMode": true,
+  "port": 8787,
+  "statePath": "data/demo.sqlite",
+  "providers": [
+    {
+      "id": "exhausted",
+      "type": "demo",
+      "models": [
+        "default"
+      ],
+      "priority": 1,
+      "demo": {
+        "remaining": 100,
+        "fail": "quota_exhausted"
+      }
+    },
+    {
+      "id": "available",
+      "type": "demo",
+      "models": [
+        "default"
+      ],
+      "priority": 2,
+      "demo": {
+        "remaining": 50,
+        "text": "统一网关演示：第一家额度耗尽，本次请求已自动转交第二家。"
+      }
+    }
+  ]
+}

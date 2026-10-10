@@ -1,0 +1,72 @@
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+  "statePath": "data/gateway.sqlite",
+  "gatewayKeyEnv": "GATEWAY_KEY",
+  "adminKeyEnv": "GATEWAY_ADMIN_KEY",
+  "timeoutMs": 120000,
+  "quotaTtlMs": 60000,
+  "providers": [
+    {
+      "id": "ark",
+      "type": "ark",
+      "models": [
+        "doubao-seed-code"
+      ],
+      "enabled": false,
+      "billingVerified": false,
+      "apiKeyEnv": "ARK_CODING_API_KEY",
+      "priority": 10,
+      "maxConcurrency": 1
+    },
+    {
+      "id": "claude",
+      "type": "claude",
+      "models": [
+        "sonnet"
+      ],
+      "enabled": false,
+      "billingVerified": false,
+      "command": "claude",
+      "priority": 20,
+      "maxConcurrency": 1
+    },
+    {
+      "id": "codex",
+      "type": "codex",
+      "mode": "exec",
+      "models": [
+        "gpt-6-sol"
+      ],
+      "enabled": false,
+      "billingVerified": false,
+      "command": "codex",
+      "priority": 30,
+      "maxConcurrency": 1
+    },
+    {
+      "id": "codebuddy",
+      "type": "codebuddy",
+      "models": [
+        "REPLACE_WITH_ACCOUNT_MODEL"
+      ],
+      "enabled": false,
+      "billingVerified": false,
+      "command": "codebuddy",
+      "priority": 40,
+      "maxConcurrency": 1
+    },
+    {
+      "id": "antigravity",
+      "type": "antigravity",
+      "models": [
+        "REPLACE_WITH_ACCOUNT_MODEL"
+      ],
+      "enabled": false,
+      "billingVerified": false,
+      "command": "agy",
+      "priority": 50,
+      "maxConcurrency": 1
+    }
+  ]
+}
