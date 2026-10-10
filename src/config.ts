@@ -56,6 +56,8 @@ export function validateConfig(raw: any): Config {
     'priority',
     'maxConcurrency',
     'billingVerified',
+    'allowAuto',
+    'profile',
     'apiKeyEnv',
     'baseUrl',
     'command',
@@ -76,7 +78,11 @@ export function validateConfig(raw: any): Config {
     if (typeof p.id !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/.test(p.id) || seen.has(p.id))
       fail('provider ids must be unique lowercase identifiers');
     seen.add(p.id);
-    if (!['ark', 'codex', 'claude', 'codebuddy', 'antigravity', 'demo'].includes(p.type))
+    if (
+      !['ark', 'openai-compatible', 'codex', 'claude', 'codebuddy', 'antigravity', 'demo'].includes(
+        p.type,
+      )
+    )
       fail('unknown provider type');
     if (
       p.approvedHooksSha256 !== undefined &&
@@ -90,14 +96,29 @@ export function validateConfig(raw: any): Config {
       !p.models.length ||
       p.models.length > 64 ||
       new Set(p.models).size !== p.models.length ||
-      p.models.some((m: any) => typeof m !== 'string' || !m || m.length > 128 || m.includes('/'))
+      p.models.some(
+        (m: any) =>
+          typeof m !== 'string' ||
+          !m ||
+          m.length > 128 ||
+          (p.type === 'openai-compatible'
+            ? !/^[A-Za-z0-9._:+-]+(?:\/[A-Za-z0-9._:+-]+)*$/.test(m)
+            : m.includes('/')),
+      )
     )
       fail('models must be unique nonempty alias-safe names');
-    for (const name of ['enabled', 'billingVerified'])
+    for (const name of ['enabled', 'billingVerified', 'allowAuto'])
       if (p[name] !== undefined && typeof p[name] !== 'boolean') fail(name + ' must be boolean');
     for (const name of ['apiKeyEnv', 'tokenEnv'])
       if (p[name] !== undefined && !envName(p[name]))
         fail(name + ' must reference an environment variable');
+    if (p.type === 'openai-compatible' && (!p.baseUrl || !envName(p.apiKeyEnv)))
+      fail('OpenAI-compatible providers require baseUrl and apiKeyEnv');
+    if (
+      p.profile !== undefined &&
+      (p.type !== 'openai-compatible' || p.profile !== 'ark-coding-plan')
+    )
+      fail('unsupported API profile');
     if (
       p.args !== undefined &&
       (!Array.isArray(p.args) || p.args.some((a: any) => typeof a !== 'string' || a.includes('\0')))

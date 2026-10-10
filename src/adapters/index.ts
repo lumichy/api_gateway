@@ -1,6 +1,7 @@
 import { GatewayError } from '../errors.ts';
 import type { Provider, ChatRequest, QuotaSnapshot, ProviderEvent, ErrorKind } from '../types.ts';
-import { checkAbort, httpError, openAIStream } from './http.ts';
+import { checkAbort } from './http.ts';
+import { compatibleEndpoint, compatibleInvoke } from './openai-compatible.ts';
 import { singleTurn } from './subprocess.ts';
 import { claudeInvoke, claudeHealth } from './claude.ts';
 import { codebuddyInvoke, codebuddyHealth } from './codebuddy.ts';
@@ -10,12 +11,14 @@ import { antigravityHealth, antigravityInvoke } from './antigravity.ts';
 import { codexExecHealth, codexExecInvoke } from './codex-exec.ts';
 export type ProviderConfig = {
   id: string;
-  type: 'ark' | 'codex' | 'claude' | 'codebuddy' | 'antigravity' | 'demo';
+  type: 'ark' | 'openai-compatible' | 'codex' | 'claude' | 'codebuddy' | 'antigravity' | 'demo';
   models: string[];
   enabled?: boolean;
   priority?: number;
   maxConcurrency?: number;
   billingVerified?: boolean;
+  allowAuto?: boolean;
+  profile?: 'ark-coding-plan';
   apiKeyEnv?: string;
   baseUrl?: string;
   command?: string;
@@ -31,11 +34,25 @@ const blocked: Partial<Record<ProviderConfig['type'], string>> = {
     'Codex app-server inference unavailable: a verified all-tools-disabled configuration is required.',
 };
 export function createProvider(config: ProviderConfig): Provider {
-  if (config.type === 'ark' && config.baseUrl && config.baseUrl.replace(/\/$/, '') !== arkURL)
+  const ark = config.type === 'ark' || config.profile === 'ark-coding-plan';
+  if (ark && config.baseUrl && config.baseUrl.replace(/\/+$/, '') !== arkURL)
     throw new GatewayError('unsupported', 'Ark requires its dedicated Coding Plan endpoint', {
       providerId: config.id,
     });
   const direct = config.type === 'codex' && config.mode === 'responses';
+  const http = config.type === 'ark' || config.type === 'openai-compatible';
+  const httpConfig = {
+    id: config.id,
+    baseUrl: ark ? arkURL : config.baseUrl!,
+    apiKeyEnv: ark ? (config.apiKeyEnv ?? 'ARK_CODING_API_KEY') : config.apiKeyEnv!,
+  };
+  if (http) {
+    compatibleEndpoint(httpConfig);
+    if (!httpConfig.apiKeyEnv || !/^[A-Z_][A-Z0-9_]*$/.test(httpConfig.apiKeyEnv))
+      throw new GatewayError('unsupported', 'API provider requires an apiKeyEnv reference', {
+        providerId: config.id,
+      });
+  }
   const exec = config.type === 'codex' && config.mode === 'exec';
   const enabled =
     config.type === 'demo'
@@ -45,6 +62,7 @@ export function createProvider(config: ProviderConfig): Provider {
     id: config.id,
     models: [...config.models],
     enabled,
+    allowAuto: config.allowAuto ?? config.type !== 'openai-compatible',
     priority: config.priority ?? 100,
     maxConcurrency: config.maxConcurrency ?? 1,
     capabilities: {
@@ -52,11 +70,11 @@ export function createProvider(config: ProviderConfig): Provider {
         direct ||
         exec ||
         config.type === 'demo' ||
-        config.type === 'ark' ||
+        http ||
         config.type === 'claude' ||
         config.type === 'codebuddy' ||
         config.type === 'antigravity',
-      history: direct || config.type === 'demo' || config.type === 'ark',
+      history: direct || config.type === 'demo' || http,
     },
   };
   const unknown = (): QuotaSnapshot => ({ source: 'unknown', observedAt: Date.now(), windows: [] });
@@ -104,10 +122,10 @@ export function createProvider(config: ProviderConfig): Provider {
       if (exec) return codexExecHealth(config, signal);
       if (blocked[config.type]) return { available: false, detail: blocked[config.type] };
       if (config.type === 'antigravity') return antigravityHealth(config, signal);
-      if (config.type === 'ark')
+      if (http)
         return {
-          available: !!process.env[config.apiKeyEnv ?? 'ARK_CODING_API_KEY'],
-          detail: 'Dedicated Coding Plan key required; login and quota not tested',
+          available: !!process.env[httpConfig.apiKeyEnv],
+          detail: 'API key configured; connectivity and quota not tested',
         };
       if (config.type === 'claude') return claudeHealth(config, signal);
       if (config.type === 'codebuddy') return codebuddyHealth(config, signal);
@@ -165,28 +183,7 @@ export function createProvider(config: ProviderConfig): Provider {
         yield* antigravityInvoke(config, request, signal);
         return;
       }
-      const key = process.env[config.apiKeyEnv ?? 'ARK_CODING_API_KEY'];
-      if (!key)
-        throw new GatewayError(
-          'auth_required',
-          'Dedicated Coding Plan API key environment variable is missing',
-          { providerId: config.id },
-        );
-      try {
-        const response = await fetch(arkURL + '/chat/completions', {
-          method: 'POST',
-          signal,
-          redirect: 'error',
-          headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
-          body: JSON.stringify({ model: request.model, messages: request.messages, stream: true }),
-        });
-        if (!response.ok) throw await httpError(response, config.id);
-        yield* openAIStream(response, signal);
-      } catch (e) {
-        checkAbort(signal);
-        if (e instanceof GatewayError) throw e;
-        throw new GatewayError('transient', 'Ark transport failed', { providerId: config.id });
-      }
+      yield* compatibleInvoke(httpConfig, request, signal);
     },
   };
 }

@@ -1,12 +1,13 @@
 # Subscription adapters
 
-Real providers default to disabled. Both `enabled:true` and `billingVerified:true` are required. The latter is the operator's explicit assertion that the configured account, credential and invocation use the intended subscription. It does not verify account eligibility or guarantee unlimited usage. Offline fixtures verify transport; separately authorized live checks are recorded in docs/verification.md.
+Real providers default to disabled. Both `enabled:true` and `billingVerified:true` are required. The latter is the operator's explicit assertion that the configured account, credential and invocation use the intended billing path (subscription or API). It does not verify account eligibility or guarantee unlimited usage. Offline fixtures verify transport; separately authorized live checks are recorded in docs/verification.md.
 
 `createProvider(config)` exports the shared Provider interface from `index.ts`.
 
 Source layout:
 
 - `codebuddy.ts`: CodeBuddy health, text Agent, denied tool catalog and invocation settings.
+- `openai-compatible.ts`: Shared bearer-key Chat Completions HTTP transport for API providers and Ark. Endpoint/authentication checks, structured messages, streaming and cancellation; SSE parsing and HTTP error classification remain in `http.ts`.
 - `claude.ts`: Claude subscription health, safe-mode settings, version and initialization-auth checks. Managed-policy checks remain in `claude-policy.ts`.
 - `cli-stream.ts`: Shared print/stream-json arguments, bounded event parsing, tool rejection, terminal consistency and usage conversion. Provider-specific preflight and initialization checks are supplied by the adapter.
 - `subprocess.ts`: Shared process spawning, line limits, cancellation, temporary-directory cleanup, executable bootstrap validation and CLI helpers. It does not dispatch Claude or CodeBuddy requests.
@@ -18,10 +19,11 @@ Configuration:
 ```ts
 {
  id: string,
- type: 'ark' | 'codex' | 'claude' | 'codebuddy' | 'antigravity' | 'demo',
+ type: 'ark' | 'openai-compatible' | 'codex' | 'claude' | 'codebuddy' | 'antigravity' | 'demo',
  models: string[],
  enabled?: boolean, priority?: number, maxConcurrency?: number,
  billingVerified?: boolean,
+ allowAuto?: boolean, profile?: 'ark-coding-plan',
  apiKeyEnv?: string, baseUrl?: string,
  command?: string, args?: string[],
  mode?: 'app-server' | 'responses' | 'exec', tokenEnv?: string,
@@ -37,6 +39,7 @@ Only environment-variable names belong in configuration; credential values do no
 | --- | --- | --- | --- |
 | Demo | Enabled by default; no account | Local configured response | Manual remaining requests, null if omitted |
 | Ark | Coding Plan enabled, dedicated key in apiKeyEnv (default ARK_CODING_API_KEY), explicit billing verification | Structured messages sent to dedicated Chat endpoint | Unknown: no verified quota query endpoint |
+| OpenAI compatible | Explicit enabled/billingVerified, baseUrl and apiKeyEnv | Structured text messages; slash-separated upstream models | Unknown unless manually supplied; auto disabled by default |
 | Claude | Official CLI with documented flags, subscription login, verified billing for print mode | One user message, optionally one leading system message; history/developer rejected | Unknown |
 | CodeBuddy | Official CLI, supported no-tools flags, subscription login and verified billing | One user with optional leading system; history/developer rejected | Unknown |
 | Codex CLI exec | mode:exec, native CLI 0.157.1, ChatGPT account login, verified billing | One user and optional leading system; completed text emitted after successful process exit | Official app-server percentage windows |
@@ -55,7 +58,7 @@ Codex quota runs only initialize, initialized and account/rateLimits/read RPCs, 
 
 CodeBuddy uses its official print CLI in an empty temporary directory, with --tools "" to disable built-ins, --strict-mcp-config and an empty MCP configuration to exclude Plugin MCP and user/project/local MCP sources, --setting-sources "" and --settings '{"disableAllHooks":true}', and no session persistence. It does not submit HTTP runs, whose per-run all-tools-disabled control was not verified. User text is stdin and the optional leading system instruction uses --system-prompt. Health checks executable version only; operator verification and inference still determine authentication/coverage. No permission-bypass flag is used. [Official CLI reference](https://www.codebuddy.ai/docs/cli/cli-reference), [official hook settings](https://www.codebuddy.cn/docs/cli/settings).
 
-Antigravity uses the official native CLI's cached Google account and stream-json protocol. Versions 1.3.1 and 1.3.2 are explicitly verified and allowed; unverified upgrades are refused. Health reports the installed accepted version. Each request creates a uniquely named Markdown Agent with tools/MCP/skills/plugins empty, an isolated working directory, literal optional system instructions, and one stdin user event. No continuation or permission bypass is enabled. The initialization tools array advertises the global catalog; real empty-tools/read-tool control requests verified that it does not describe the selected Agent's permissions. The parser checks Agent/model/cwd/permission, rejects actual tool/subagent events, requires a consistent single-turn SUCCESS result and successful process exit, and emits incremental text plus optional valid usage.
+Antigravity uses the official native CLI's cached Google account and stream-json protocol. Versions 1.3.1, 1.3.2 and 1.3.3 are explicitly verified and allowed; unverified upgrades are refused. Health reports the installed accepted version. Each request creates a uniquely named Markdown Agent with tools/MCP/skills/plugins empty, an isolated working directory, literal optional system instructions, and one stdin user event. No continuation or permission bypass is enabled. The initialization tools array advertises the global catalog; real empty-tools/read-tool control requests verified that it does not describe the selected Agent's permissions. The parser checks Agent/model/cwd/permission, rejects actual tool/subagent events, requires a consistent single-turn SUCCESS result and successful process exit, and emits incremental text plus optional valid usage.
 
 Before startup the adapter checks account-default billing and disabled extra credits, rejects global instructions/MCP/plugins, and requires explicit approval for global lifecycle hooks through `approvedHooksSha256`. The digest pins the complete hook configuration; any change requires renewed approval. It never copies cached tokens or modifies the global profile. Commercial Google API credential environment variables are removed from the child process. Official quota remains unknown; quota/rate/auth errors use existing gateway fallback and cooldown. Native cancellation was tested on Windows; POSIX CLI deployment and SIGTERM-resistant subprocesses have not been validated.
 

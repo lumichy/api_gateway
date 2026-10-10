@@ -29,21 +29,29 @@ export async function httpError(response: Response, providerId?: string) {
     }
   }
   let code = '';
+  let inFlightBudget = false;
   try {
     const parsed = JSON.parse(body);
     code = String(parsed.error?.code ?? parsed.error?.type ?? '');
+    inFlightBudget = parsed.error?.metadata?.limit_source === 'openrouter_in_flight_budget';
   } catch {}
   const quota = /quota|credit|budget|balance|subscription.*exhaust/i.test(code);
   const kind =
     response.status === 401 || response.status === 403
       ? 'auth_required'
-      : response.status === 429
-        ? quota
-          ? 'quota_exhausted'
-          : 'rate_limited'
-        : response.status >= 500
+      : response.status === 402
+        ? inFlightBudget
+          ? 'rate_limited'
+          : 'quota_exhausted'
+        : response.status === 408
           ? 'transient'
-          : 'invalid_request';
+          : response.status === 429
+            ? quota
+              ? 'quota_exhausted'
+              : 'rate_limited'
+            : response.status >= 500
+              ? 'transient'
+              : 'invalid_request';
   const retry = response.headers.get('retry-after');
   let retryAt: number | undefined;
   if (retry) {
@@ -120,7 +128,19 @@ export async function* openAIStream(
       throw new GatewayError('transient', 'Invalid provider stream JSON');
     }
     if (chunk.error) {
-      const status = chunk.error.status ?? (chunk.error.code === 'insufficient_quota' ? 429 : 500);
+      const rawStatus = chunk.error.status ?? chunk.error.code;
+      const numericStatus =
+        typeof rawStatus === 'number'
+          ? rawStatus
+          : /^\d{3}$/.test(String(rawStatus))
+            ? Number(rawStatus)
+            : NaN;
+      const status =
+        Number.isInteger(numericStatus) && numericStatus >= 400 && numericStatus <= 599
+          ? numericStatus
+          : chunk.error.code === 'insufficient_quota'
+            ? 429
+            : 500;
       throw await httpError(new Response(JSON.stringify(chunk), { status }));
     }
     if (

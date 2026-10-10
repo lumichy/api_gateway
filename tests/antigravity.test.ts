@@ -35,7 +35,7 @@ const invoke = (text: string, s = new AbortController().signal) =>
 test('Antigravity accepts verified versions and refuses unverified upgrades', async () => {
   const previous = process.env.GATEWAY_FIXTURE_AGY_VERSION;
   try {
-    for (const [version, expected] of [['1.3.1', true], ['1.3.2', true], ['1.3.3', false], ['2.0.0', false]] as const) {
+    for (const [version, expected] of [['1.3.1', true], ['1.3.2', true], ['1.3.3', true], ['1.3.4', false], ['2.0.0', false]] as const) {
       process.env.GATEWAY_FIXTURE_AGY_VERSION = version;
       assert.equal((await antigravityHealth(config, new AbortController().signal, profile)).available, expected, version);
       if (!expected) await assert.rejects(() => invoke('OK'), { kind: 'unsupported' });

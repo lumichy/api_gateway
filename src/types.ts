@@ -22,6 +22,7 @@ export interface Provider {
   id: string;
   models: string[];
   enabled: boolean;
+  allowAuto?: boolean;
   priority: number;
   maxConcurrency: number;
   capabilities: { system: boolean; history: boolean };

@@ -6,3 +6,5 @@ config.local.json
 data/
 *.sqlite*
 .tools/
+docs/
+tests/

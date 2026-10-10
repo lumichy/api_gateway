@@ -14,7 +14,7 @@ import {
 } from './subprocess.ts';
 
 // Each version is admitted only after live Agent isolation and protocol checks.
-const supportedVersions = ['1.3.1', '1.3.2'];
+const supportedVersions = ['1.3.1', '1.3.2', '1.3.3'];
 const profileDirectory = () => join(homedir(), '.gemini');
 
 async function optionalJSON(file: string): Promise<any> {

@@ -9,7 +9,10 @@
   "providers": [
     {
       "id": "ark",
-      "type": "ark",
+      "type": "openai-compatible",
+      "profile": "ark-coding-plan",
+      "allowAuto": true,
+      "baseUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
       "models": [
         "doubao-seed-code"
       ],

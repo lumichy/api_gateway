@@ -55,6 +55,7 @@ export class Router {
       const discovered = await Promise.all(
         this.providers.map(async (p): Promise<Candidate | null> => {
           if (!p.enabled || (pinned && p !== pinned)) return null;
+          if (!pinned && p.allowAuto === false) return null;
           const model = pinned ? request.model.slice(p.id.length + 1) : p.models[0];
           if (!model) return null;
           const hasHistory =

@@ -117,3 +117,13 @@ config.local.json 中 Claude 的enabled及billingVerified改为true，模型sonn
 用户批准将CodeBuddy及Claude拆为独立模块。新增codebuddy.ts（健康检查、Agent及禁止工具设置、调用入口）、claude.ts（健康/订阅鉴权、safe-mode、策略/版本预检、初始化鉴权、调用入口）、cli-stream.ts（两家共用print参数及stream-json解析）。subprocess.ts保留子进程传输、启动参数校验、取消、清理及CLI公共函数，不再执行两家的健康或推理分支。index.ts分别分发；scripts/codebuddy.ts及直接健康测试的import同步更新。
 
 保持原参数顺序、协议、限额、终态校验、用量及取消处理。完整146项回归通过、0失败，typecheck及format:check通过。核实旧PID21788后重启为PID24320，原8787入口health=ok。拆分后的CodeBuddy、Claude、Codex及Ark只读诊断available=true；未为重构追加真实推理请求。最终诊断另发现Antigravity再次升级到白名单以外的版本，因版本检查而不可用；这是已安装CLI变化，非本次模块拆分所致，未放宽契约。
+
+### Antigravity 1.3.3 恢复（2026-10-10）
+
+用户报告 antigravity/gemini-3.8-flash-low 返回503/auth_required。实际CLI为1.3.3，doctor明确显示版本尚未验证；原错误是健康检查统一提示，并不能据此认定账号登录失效。
+
+在保持本番版本限制期间补做原生CLI隔离对照：tools:[] Agent返回NO_TOOL，工具事件0，未读到随机canary；只允许view_file的对照Agent产生2个工具事件并读到自建临时文件的随机值。两次均SUCCESS/单轮，Agent/model/request-review初始化保持原协议，一次性临时目录已清理。
+
+回归先确认1.3.3可用预期在旧代码失败，再将支持版本加入1.3.3；保留1.3.4/2.0.0拒绝。完整154项测试通过，typecheck及format:check通过。
+
+确认生产网关空闲后重启。实际8787入口指定gemini-3.8-flash-low的SSE返回200、provider=antigravity、OK、[DONE]。独立内存状态中将其余四家额度置零，auto真实回退到Antigravity，普通JSON返回200、OK、stop。生产及临时状态活动租约均0；未修改生产额度或登录配置。

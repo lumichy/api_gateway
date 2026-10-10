@@ -31,6 +31,31 @@ Invoke-RestMethod -Uri http://127.0.0.1:8787/v1/chat/completions -Method Post -C
 
 ## 配置真实订阅
 
+### 通用 OpenAI 兼容 API
+
+`type: "openai-compatible"` 可接入使用 Bearer API Key 的 Chat Completions 服务。将以下条目加入 `config.local.json` 的 `providers`，把 API Key 放入 `OPENROUTER_API_KEY` 环境变量或本机私有 `.env.local`。`models` 填服务商实际提供的模型 ID；允许 `厂商/模型`，调用网关时再加 provider 前缀，例如 `openrouter/openai/gpt-4`。
+
+```json
+{
+  "id": "openrouter",
+  "type": "openai-compatible",
+  "baseUrl": "https://openrouter.ai/api/v1",
+  "apiKeyEnv": "OPENROUTER_API_KEY",
+  "models": ["openai/gpt-4"],
+  "enabled": false,
+  "billingVerified": false,
+  "allowAuto": false,
+  "priority": 100,
+  "maxConcurrency": 1
+}
+```
+
+模型 ID 是配置示例，实际选用前请核对服务商目录。确认该 API 的付费方式后，将 `enabled` 和 `billingVerified` 设为 `true`。通用 API 默认不参与 `auto`；需要自动回退到此 API 时显式设置 `allowAuto: true`。没有余额查询实现的 API，其额度显示为 `unknown`，按现有调度规则参与排序。模型列表发布不代表所有模型已真实调用成功。配置修改后需重启服务。
+
+`baseUrl` 指向 API 根路径，adapter 自动追加 `/chat/completions`，并复用现有 SSE、取消、错误及回退处理。支持当前网关的文本消息与多轮历史；工具、图片和 Responses 不在本次范围内。[OpenRouter 官方接口说明](https://openrouter.ai/docs/api/api-reference/chat/send-chat-completion-request)。
+
+火山方舟配置同样使用 `openai-compatible`，另加 `profile: "ark-coding-plan"` 和 `allowAuto: true`。该 profile 强制使用 `https://ark.cn-beijing.volces.com/api/coding/v3`，保留订阅调度及专用地址保护。旧的 `type: "ark"` 配置继续兼容，底层调用同一个 adapter。
+
 ~~~powershell
 Copy-Item -LiteralPath config.example.json -Destination config.local.json
 $env:GATEWAY_KEY = '设置至少24字符的独立网关密钥'
@@ -51,13 +76,13 @@ node src/main.ts --config config.local.json
 | ChatGPT SIWC（可选） | 官方 SIWC 授权给本应用的访问令牌放入 CHATGPT_SIWC_ACCESS_TOKEN；mode:responses | 结构化多轮；可选一个前置 system | unknown；不能混用 Codex 的额度桶 |
 | Codex CLI | 官方订阅登录；mode:exec，CLI 0.157.1 | 一个 user，可选前置 system；SSE 在回答完成后输出 | 官方 RPC 多窗口百分比 |
 | Codex App Server | 可单独通过官方 RPC 读取 quota | 推理停用，未核实完整禁用工具配置 | 官方，多额度桶；不等于 SIWC Responses 权益 |
-| Antigravity | 本机官方 agy CLI 1.3.1/1.3.2 缓存账号；单次隔离的空工具 Agent；全局 hooks 需单独确认 | 一个 user，可选一个前置 system | unknown 或人工快照；/usage 未作为机器接口 |
+| Antigravity | 本机官方 agy CLI 1.3.1/1.3.2/1.3.3 缓存账号；单次隔离的空工具 Agent；全局 hooks 需单独确认 | 一个 user，可选一个前置 system | unknown 或人工快照；/usage 未作为机器接口 |
 
 CLI 适配器不把完整历史压成带角色标签的字符串。多轮请求会筛选到支持结构化历史的供应商；若没有匹配者，返回明确 400。可选 system+user 是单轮，已单独验证。不能因需要回退而放宽消息语义。
 
 ### Antigravity CLI
 
-复用官方 CLI 的 Google 登录，无需把 OAuth 凭据放进网关。Windows 官方默认可执行文件为 `%LOCALAPPDATA%/agy/bin/agy.exe`；先运行官方 `agy models` 确认可用模型，再在 config.local.json 中设置 type:antigravity、command 和 models。已验证版本为1.3.1和1.3.2，本机当前1.3.2。启用需要 enabled:true 与 billingVerified:true；本机已启用并真实验证 gemini-3.8-flash-low 和 gemini-3.1-pro-high 两个模型，priority20。新鲜已知额度优先，unknown 供应商再按 priority 排序。
+复用官方 CLI 的 Google 登录，无需把 OAuth 凭据放进网关。Windows 官方默认可执行文件为 `%LOCALAPPDATA%/agy/bin/agy.exe`；先运行官方 `agy models` 确认可用模型，再在 config.local.json 中设置 type:antigravity、command 和 models。已验证版本为1.3.1、1.3.2和1.3.3，本机当前1.3.3。启用需要 enabled:true 与 billingVerified:true；本机已启用并真实验证 gemini-3.8-flash-low 和 gemini-3.1-pro-high 两个模型，priority20。新鲜已知额度优先，unknown 供应商再按 priority 排序。
 
 客户端固定模型别名为 `antigravity/gemini-3.8-flash-low` 或 `antigravity/gemini-3.1-pro-high`；`auto` 可在前序供应商耗尽后选择它。地址和 Gateway Key 沿用现有入口。余额 unknown 时按配置优先级回退，不能宣称按精确官方余额选择。
 
