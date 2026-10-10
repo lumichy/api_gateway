@@ -7,7 +7,7 @@ Real providers default to disabled. Both `enabled:true` and `billingVerified:tru
 Source layout:
 
 - `codebuddy.ts`: CodeBuddy health, text Agent, denied tool catalog and invocation settings.
-- `openai-compatible.ts`: Shared bearer-key Chat Completions HTTP transport for API providers and Ark. Endpoint/authentication checks, structured messages, streaming and cancellation; SSE parsing and HTTP error classification remain in `http.ts`.
+- `openai-compatible.ts`: Bearer-key Chat Completions HTTP transport for all API providers. Endpoint/authentication checks, structured messages, streaming and cancellation; SSE parsing and HTTP error classification remain in `http.ts`.
 - `claude.ts`: Claude subscription health, safe-mode settings, version and initialization-auth checks. Managed-policy checks remain in `claude-policy.ts`.
 - `cli-stream.ts`: Shared print/stream-json arguments, bounded event parsing, tool rejection, terminal consistency and usage conversion. Provider-specific preflight and initialization checks are supplied by the adapter.
 - `subprocess.ts`: Shared process spawning, line limits, cancellation, temporary-directory cleanup, executable bootstrap validation and CLI helpers. It does not dispatch Claude or CodeBuddy requests.
@@ -19,11 +19,11 @@ Configuration:
 ```ts
 {
  id: string,
- type: 'ark' | 'openai-compatible' | 'codex' | 'claude' | 'codebuddy' | 'antigravity' | 'demo',
+ type: 'openai-compatible' | 'codex' | 'claude' | 'codebuddy' | 'antigravity' | 'demo',
  models: string[],
  enabled?: boolean, priority?: number, maxConcurrency?: number,
  billingVerified?: boolean,
- allowAuto?: boolean, profile?: 'ark-coding-plan',
+ allowAuto?: boolean,
  apiKeyEnv?: string, baseUrl?: string,
  command?: string, args?: string[],
  mode?: 'app-server' | 'responses' | 'exec', tokenEnv?: string,
@@ -38,7 +38,6 @@ Only environment-variable names belong in configuration; credential values do no
 | Path | Enable conditions | Request semantics | Quota |
 | --- | --- | --- | --- |
 | Demo | Enabled by default; no account | Local configured response | Manual remaining requests, null if omitted |
-| Ark | Coding Plan enabled, dedicated key in apiKeyEnv (default ARK_CODING_API_KEY), explicit billing verification | Structured messages sent to dedicated Chat endpoint | Unknown: no verified quota query endpoint |
 | OpenAI compatible | Explicit enabled/billingVerified, baseUrl and apiKeyEnv | Structured text messages; slash-separated upstream models | Unknown unless manually supplied; auto disabled by default |
 | Claude | Official CLI with documented flags, subscription login, verified billing for print mode | One user message, optionally one leading system message; history/developer rejected | Unknown |
 | CodeBuddy | Official CLI, supported no-tools flags, subscription login and verified billing | One user with optional leading system; history/developer rejected | Unknown |
@@ -46,7 +45,7 @@ Only environment-variable names belong in configuration; credential values do no
 | Codex Responses | mode:responses, tokenEnv naming app-authorized SIWC OAuth access token, eligible plan, authorized inference scope, verified subscription billing | One optional leading system becomes instructions; developer/user/assistant history stays structured | Unknown; never substitutes Codex CLI bucket |
 | Codex app-server | Default mode, official Codex CLI subscription login | Quota read only; inference unavailable | Official percent windows when returned |
 
-Ark is pinned to https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions. Any different baseUrl is rejected, including the generic /api/v3 billed route. Redirects are rejected. Use the dedicated Coding Plan credential and an account-supported model. [Official Coding Plan documentation](https://docs.volcengine.com/docs/ark/coding-plan-personal-get-started?lang=zh).
+Ark, OpenRouter and OpenCode Zen are ordinary `openai-compatible` configurations. Provider ids do not select special behavior. Every API endpoint and key environment reference must be configured explicitly; the adapter has no provider-specific defaults, profiles or endpoint restrictions. The local Ark configuration uses the Coding Plan URL and `allowAuto: true`; generic API auto defaults remain false. Redirects are rejected for every compatible provider.
 
 Claude Code 2.1.296 launches in a new empty temporary directory with --safe-mode (retains subscription OAuth), --tools "", --strict-mcp-config with empty MCP servers, disabled hooks/slash commands/browser, no permission prompts and no session persistence. API credential and CLAUDE_CODE environment overrides are removed. Auth status must report claude.ai, firstParty and Pro/Max; init apiKeySource must be exactly none. System/registry managed policies and remote-settings caches cause a fail-closed refusal before CLI startup because managed hooks survive safe mode. User text is stdin and optional system is a separate argv value. Unexpected tool calls, inconsistent results or unsuccessful child exit are rejected. Confirm Extra Usage is disabled before enabling. [Official CLI reference](https://code.claude.com/docs/en/cli-reference).
 

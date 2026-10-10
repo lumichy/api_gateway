@@ -11,14 +11,13 @@ import { antigravityHealth, antigravityInvoke } from './antigravity.ts';
 import { codexExecHealth, codexExecInvoke } from './codex-exec.ts';
 export type ProviderConfig = {
   id: string;
-  type: 'ark' | 'openai-compatible' | 'codex' | 'claude' | 'codebuddy' | 'antigravity' | 'demo';
+  type: 'openai-compatible' | 'codex' | 'claude' | 'codebuddy' | 'antigravity' | 'demo';
   models: string[];
   enabled?: boolean;
   priority?: number;
   maxConcurrency?: number;
   billingVerified?: boolean;
   allowAuto?: boolean;
-  profile?: 'ark-coding-plan';
   apiKeyEnv?: string;
   baseUrl?: string;
   command?: string;
@@ -28,23 +27,17 @@ export type ProviderConfig = {
   approvedHooksSha256?: string;
   demo?: { remaining?: number | null; fail?: string; text?: string };
 };
-const arkURL = 'https://ark.cn-beijing.volces.com/api/coding/v3';
 const blocked: Partial<Record<ProviderConfig['type'], string>> = {
   codex:
     'Codex app-server inference unavailable: a verified all-tools-disabled configuration is required.',
 };
 export function createProvider(config: ProviderConfig): Provider {
-  const ark = config.type === 'ark' || config.profile === 'ark-coding-plan';
-  if (ark && config.baseUrl && config.baseUrl.replace(/\/+$/, '') !== arkURL)
-    throw new GatewayError('unsupported', 'Ark requires its dedicated Coding Plan endpoint', {
-      providerId: config.id,
-    });
   const direct = config.type === 'codex' && config.mode === 'responses';
-  const http = config.type === 'ark' || config.type === 'openai-compatible';
+  const http = config.type === 'openai-compatible';
   const httpConfig = {
     id: config.id,
-    baseUrl: ark ? arkURL : config.baseUrl!,
-    apiKeyEnv: ark ? (config.apiKeyEnv ?? 'ARK_CODING_API_KEY') : config.apiKeyEnv!,
+    baseUrl: config.baseUrl!,
+    apiKeyEnv: config.apiKeyEnv!,
   };
   if (http) {
     compatibleEndpoint(httpConfig);

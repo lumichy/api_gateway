@@ -13,10 +13,10 @@ assert.equal(p.enabled,true);
 assert.deepEqual(await events(p),[{type:'text',text:'hello'},{type:'done',finishReason:'stop'}]);
 assert.equal((await p.quota('m',signal())).windows[0].remaining,4);});
 test('real providers require explicit enable and verified billing',async()=>{
-for(const type of ['ark','claude','codex','codebuddy','antigravity']){
-const p=createProvider({id:type,type,models:['m']});assert.equal(p.enabled,false);
+for(const type of ['openai-compatible','claude','codex','codebuddy','antigravity']){
+const p=createProvider({id:type,type,models:['m'],...(type==='openai-compatible'?{baseUrl:'https://example.com/v1',apiKeyEnv:'TEST_API_KEY'}:{})});assert.equal(p.enabled,false);
 assert.equal((await p.health()).available,false);await assert.rejects(()=>events(p),{kind:'unsupported'});}});
-test('Ark refuses generic billed endpoint',()=>assert.throws(()=>createProvider({id:'a',type:'ark',models:['m'],baseUrl:'https://ark.cn-beijing.volces.com/api/v3'}),{kind:'unsupported'}));
+test('Ark uses the same configurable endpoint as other compatible providers',()=>assert.doesNotThrow(()=>createProvider({id:'ark',type:'openai-compatible',models:['m'],baseUrl:'https://example.com/v1',apiKeyEnv:'MY_API_KEY'})));
 test('Claude rejects developer and history before spawning',async()=>{
 const p=createProvider({id:'c',type:'claude',models:['m'],enabled:true,billingVerified:true,command:'missing-command'});
 await assert.rejects(()=>events(p,{...request,messages:[{role:'developer',content:'rules'},...request.messages]}),{kind:'unsupported'});
@@ -131,7 +131,7 @@ assert.throws(()=>p.validate({...request,messages:[{role:'assistant',content:'ol
 const p=createProvider({id:'p',type:'codex',mode:'responses',models:['m'],enabled:true,billingVerified:true});
 p.validate({...request,messages:[{role:'system',content:'leading'},...request.messages]});
 assert.throws(()=>p.validate({...request,messages:[...request.messages,{role:'system',content:'late'}]}),{kind:'unsupported'});
-createProvider({id:'a',type:'ark',models:['m']}).validate({...request,messages:[{role:'system',content:'s'},{role:'developer',content:'d'},...request.messages]});
+createProvider({id:'ark',type:'openai-compatible',baseUrl:'https://example.com/v1',apiKeyEnv:'MY_API_KEY',models:['m']}).validate({...request,messages:[{role:'system',content:'s'},{role:'developer',content:'d'},...request.messages]});
 });
 
 import {processLines} from '../src/adapters/subprocess.ts';

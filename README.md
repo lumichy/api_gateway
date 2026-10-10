@@ -54,7 +54,7 @@ Invoke-RestMethod -Uri http://127.0.0.1:8787/v1/chat/completions -Method Post -C
 
 `baseUrl` 指向 API 根路径，adapter 自动追加 `/chat/completions`，并复用现有 SSE、取消、错误及回退处理。支持当前网关的文本消息与多轮历史；工具、图片和 Responses 不在本次范围内。[OpenRouter 官方接口说明](https://openrouter.ai/docs/api/api-reference/chat/send-chat-completion-request)。
 
-火山方舟配置同样使用 `openai-compatible`，另加 `profile: "ark-coding-plan"` 和 `allowAuto: true`。该 profile 强制使用 `https://ark.cn-beijing.volces.com/api/coding/v3`，保留订阅调度及专用地址保护。旧的 `type: "ark"` 配置继续兼容，底层调用同一个 adapter。
+火山方舟、OpenRouter、OpenCode Zen 均使用 `type: "openai-compatible"`，采用完全相同的地址、密钥和模型配置规则。`ark` 只是 provider 的 `id`；没有专用类型、profile、硬编码地址或默认密钥变量。原来的 `type: "ark"` 和 `profile` 字段已移除，旧配置需按 `config.example.json` 迁移。当前 Ark 的 Coding Plan 地址保存在配置中；它参与 `auto` 是因为配置了 `allowAuto: true`。
 
 ~~~powershell
 Copy-Item -LiteralPath config.example.json -Destination config.local.json
@@ -70,7 +70,7 @@ node src/main.ts --config config.local.json
 
 | 供应商 | 实现与启用方式 | 消息能力 | 当前余额来源 |
 | --- | --- | --- | --- |
-| 火山方舟 Coding Plan | 专用 Coding Plan Key 放入 ARK_CODING_API_KEY；只能使用 /api/coding/v3 | 文本角色、多轮 | 未核实稳定机器查询，unknown 或人工快照 |
+| 火山方舟 Coding Plan | 通用 openai-compatible adapter；配置 Coding Plan 地址和 API Key 环境变量 | 文本角色、多轮 | 未核实稳定机器查询，unknown 或人工快照 |
 | Claude | 本机官方 CLI 的订阅登录；固定可执行路径 | 一个 user，可选一个前置 system | unknown 或人工快照 |
 | CodeBuddy | 官方 CLI 订阅登录；固定可执行路径 | 一个 user，可选一个前置 system | unknown 或人工快照；统计不等于剩余额度 |
 | ChatGPT SIWC（可选） | 官方 SIWC 授权给本应用的访问令牌放入 CHATGPT_SIWC_ACCESS_TOKEN；mode:responses | 结构化多轮；可选一个前置 system | unknown；不能混用 Codex 的额度桶 |

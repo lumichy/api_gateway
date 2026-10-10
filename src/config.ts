@@ -57,7 +57,6 @@ export function validateConfig(raw: any): Config {
     'maxConcurrency',
     'billingVerified',
     'allowAuto',
-    'profile',
     'apiKeyEnv',
     'baseUrl',
     'command',
@@ -79,9 +78,7 @@ export function validateConfig(raw: any): Config {
       fail('provider ids must be unique lowercase identifiers');
     seen.add(p.id);
     if (
-      !['ark', 'openai-compatible', 'codex', 'claude', 'codebuddy', 'antigravity', 'demo'].includes(
-        p.type,
-      )
+      !['openai-compatible', 'codex', 'claude', 'codebuddy', 'antigravity', 'demo'].includes(p.type)
     )
       fail('unknown provider type');
     if (
@@ -114,11 +111,6 @@ export function validateConfig(raw: any): Config {
         fail(name + ' must reference an environment variable');
     if (p.type === 'openai-compatible' && (!p.baseUrl || !envName(p.apiKeyEnv)))
       fail('OpenAI-compatible providers require baseUrl and apiKeyEnv');
-    if (
-      p.profile !== undefined &&
-      (p.type !== 'openai-compatible' || p.profile !== 'ark-coding-plan')
-    )
-      fail('unsupported API profile');
     if (
       p.args !== undefined &&
       (!Array.isArray(p.args) || p.args.some((a: any) => typeof a !== 'string' || a.includes('\0')))
