@@ -24,6 +24,26 @@ test('SSE framing ends with DONE and final finish reason',async()=>{const f=awai
 test('unsupported tools and request fields reject before upstream',async()=>{let called=0;const a=p();a.invoke=async function*(){called++;yield {type:'done'};};const f=await fixture([a]);try{for(const body of [{...req,tools:[]},{...req,temperature:0.3},{...req,messages:[{role:'user',content:[{type:'text',text:'hello'}]}]}]){const r=await fetch(f.base+'/v1/chat/completions',options(body));assert.equal(r.status,400);}assert.equal(called,0);}finally{await f.close();}});
 test('zero quota yields 429 and Retry-After',async()=>{const f=await fixture([p('a',0)]);try{const r=await fetch(f.base+'/v1/chat/completions',options(req));assert.equal(r.status,429);assert.ok(Number(r.headers.get('retry-after'))>0);assert.equal((await r.json()).error.code,'quota_exhausted');}finally{await f.close();}});
 test('management requires independent admin token',async()=>{const f=await fixture();try{assert.equal((await fetch(f.base+'/admin/status',{headers:{authorization:'Bearer gateway-test-key-123456'}})).status,401);assert.equal((await fetch(f.base+'/admin/status',{headers:{authorization:'Bearer admin-test-key-12345678'}})).status,200);}finally{await f.close();}});
+
+test('admin refresh reads quotas without inference and preserves manual overrides', async () => {
+  const a = p('a'); let queries = 0;
+  a.quota = async () => { queries++; return {source:'official',observedAt:Date.now(),windows:[{unit:'requests',remaining:8,limit:10,resetAt:null}]}; };
+  a.invoke = async function* () { throw Error('refresh must never invoke'); };
+  const f = await fixture([a]);
+  try {
+    assert.equal((await fetch(f.base+'/admin/quota/refresh',options({},'gateway-test-key-123456'))).status,401);
+    const r = await fetch(f.base+'/admin/quota/refresh',options({},'admin-test-key-12345678'));
+    assert.equal(r.status,200); assert.equal(queries,1);
+    assert.equal((await r.json()).providers[0].quota.windows[0].remaining,8);
+    assert.equal(f.state.getQuota('a','default')?.source,'official');
+    f.state.saveQuota('a','default',{source:'manual',observedAt:Date.now(),windows:[{unit:'requests',remaining:1,resetAt:null}]});
+    const second = await fetch(f.base+'/admin/quota/refresh',options({provider:'a'},'admin-test-key-12345678'));
+    assert.equal((await second.json()).providers[0].saved,false);
+    assert.equal(f.state.getQuota('a','default')?.source,'manual');
+    assert.equal((await fetch(f.base+'/admin/quota/refresh',options({provider:'missing'},'admin-test-key-12345678'))).status,400);
+    assert.equal(f.state.status().leases.length,0);
+  } finally {await f.close();}
+});
 test('manual quota validates finite nonnegative values and registered model',async()=>{const f=await fixture();try{const bad={provider:'b',model:'default',windows:[{unit:'requests',remaining:-1,limit:100,resetAt:Date.now()+60000}]};assert.equal((await fetch(f.base+'/admin/quota',options(bad,'admin-test-key-12345678'))).status,400);bad.windows[0].remaining=0;assert.equal((await fetch(f.base+'/admin/quota',options(bad,'admin-test-key-12345678'))).status,200);assert.equal((await fetch(f.base+'/v1/chat/completions',options(req))).status,429);}finally{await f.close();}});
 test('first upstream exhausts then second serves same HTTP request',async()=>{const a=p('a',90);a.invoke=async function*(){throw new GatewayError('quota_exhausted','exhausted');};const f=await fixture([a,p('b',50)]);try{const r=await fetch(f.base+'/v1/chat/completions',options(req));assert.equal(r.status,200);assert.equal(r.headers.get('x-gateway-provider'),'b');}finally{await f.close();}});
 test('stream errors are explicit and never include another provider answer',async()=>{const a=p('a',90);a.invoke=async function*(){yield {type:'text',text:'partial'};throw new GatewayError('transient','upstream failed');};const f=await fixture([a,p('b',50)]);try{const body=await(await fetch(f.base+'/v1/chat/completions',options({...req,stream:true}))).text();assert.match(body,/partial/);assert.match(body,/"error"/);assert.doesNotMatch(body,/answer/);}finally{await f.close();}});

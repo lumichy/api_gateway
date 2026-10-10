@@ -64,6 +64,8 @@ export function validateConfig(raw: any): Config {
     'mode',
     'tokenEnv',
     'approvedHooksSha256',
+    'quotaSource',
+    'quotaCommand',
     'demo',
   ];
   const providers: ProviderConfig[] = raw.providers.map((p: any): ProviderConfig => {
@@ -111,6 +113,20 @@ export function validateConfig(raw: any): Config {
         fail(name + ' must reference an environment variable');
     if (p.type === 'openai-compatible' && (!p.baseUrl || !envName(p.apiKeyEnv)))
       fail('OpenAI-compatible providers require baseUrl and apiKeyEnv');
+    if (p.quotaSource !== undefined) {
+      if (p.type !== 'openai-compatible' || !['openrouter', 'ark-cli'].includes(p.quotaSource))
+        fail('invalid quotaSource for inference adapter');
+      if (p.quotaSource === 'openrouter' && p.baseUrl !== 'https://openrouter.ai/api/v1')
+        fail('OpenRouter telemetry requires its official API baseUrl');
+    }
+    if (
+      p.quotaCommand !== undefined &&
+      (p.quotaSource !== 'ark-cli' ||
+        typeof p.quotaCommand !== 'string' ||
+        !p.quotaCommand ||
+        p.quotaCommand.includes('\0'))
+    )
+      fail('quotaCommand requires an ark-cli quotaSource and executable path');
     if (
       p.args !== undefined &&
       (!Array.isArray(p.args) || p.args.some((a: any) => typeof a !== 'string' || a.includes('\0')))

@@ -9,6 +9,10 @@ import { responsesInvoke, responsesBody } from './responses.ts';
 import { codexQuota } from './codex.ts';
 import { antigravityHealth, antigravityInvoke } from './antigravity.ts';
 import { codexExecHealth, codexExecInvoke } from './codex-exec.ts';
+import { openrouterQuota, unknownQuota } from './quota-telemetry.ts';
+import { antigravityQuota } from './antigravity-quota.ts';
+import { createClaudeQuotaTelemetry } from './claude-quota.ts';
+import { arkQuota } from './ark-quota.ts';
 export type ProviderConfig = {
   id: string;
   type: 'openai-compatible' | 'codex' | 'claude' | 'codebuddy' | 'antigravity' | 'demo';
@@ -25,6 +29,8 @@ export type ProviderConfig = {
   mode?: 'app-server' | 'responses' | 'exec';
   tokenEnv?: string;
   approvedHooksSha256?: string;
+  quotaSource?: 'openrouter' | 'ark-cli';
+  quotaCommand?: string;
   demo?: { remaining?: number | null; fail?: string; text?: string };
 };
 const blocked: Partial<Record<ProviderConfig['type'], string>> = {
@@ -32,6 +38,7 @@ const blocked: Partial<Record<ProviderConfig['type'], string>> = {
     'Codex app-server inference unavailable: a verified all-tools-disabled configuration is required.',
 };
 export function createProvider(config: ProviderConfig): Provider {
+  const claudeTelemetry = createClaudeQuotaTelemetry();
   const direct = config.type === 'codex' && config.mode === 'responses';
   const http = config.type === 'openai-compatible';
   const httpConfig = {
@@ -70,7 +77,6 @@ export function createProvider(config: ProviderConfig): Provider {
       history: direct || config.type === 'demo' || http,
     },
   };
-  const unknown = (): QuotaSnapshot => ({ source: 'unknown', observedAt: Date.now(), windows: [] });
   const guard = (signal: AbortSignal) => {
     checkAbort(signal);
     if (!enabled)
@@ -133,7 +139,18 @@ export function createProvider(config: ProviderConfig): Provider {
           windows: [{ unit: 'requests', remaining: config.demo?.remaining ?? null, resetAt: null }],
         };
       if (config.type === 'codex' && !direct && enabled) return codexQuota(config, signal);
-      return unknown();
+      if (config.type === 'antigravity' && enabled) return antigravityQuota(config, _model, signal);
+      if (config.type === 'claude' && enabled) return claudeTelemetry.read(_model);
+      if (config.quotaSource === 'openrouter' && enabled)
+        return openrouterQuota(config, _model, signal);
+      if (config.quotaSource === 'ark-cli' && enabled) return arkQuota(config, signal);
+      return unknownQuota(
+        config.type === 'codebuddy'
+          ? 'Official CLI has no supported account credit balance query; use the account Usage page'
+          : config.type === 'claude'
+            ? 'Official CLI exposes usage windows after an API response, not a fresh read-only quota query'
+            : 'Quota telemetry is not configured',
+      );
     },
     async *invoke(request: ChatRequest, signal: AbortSignal): AsyncGenerator<ProviderEvent> {
       guard(signal);
@@ -165,7 +182,9 @@ export function createProvider(config: ProviderConfig): Provider {
         return;
       }
       if (config.type === 'claude') {
-        yield* claudeInvoke(config, request, signal);
+        yield* claudeInvoke(config, request, signal, (event) =>
+          claudeTelemetry.observe(event, request.model),
+        );
         return;
       }
       if (config.type === 'codebuddy') {

@@ -33,21 +33,39 @@ export class State {
       )?.pool ?? model
     );
   }
-  saveQuota(provider: string, model: string, q: QuotaSnapshot) {
-    if (q.source === 'unknown' && this.getQuota(provider, model)) return;
+  saveQuota(provider: string, model: string, q: QuotaSnapshot): boolean {
+    const current = this.getQuota(provider, model);
+    if (q.source !== 'manual' && (current?.reported?.source ?? current?.source) === 'manual')
+      return false;
+    if (q.source === 'unknown' && current) return false;
     const pool = q.pool ?? model;
     const prev = this.db
       .prepare('SELECT snapshot FROM quota_pools WHERE provider=? AND pool=?')
       .get(provider, pool) as any;
+    const previous = prev ? (JSON.parse(prev.snapshot) as QuotaSnapshot) : undefined;
     this.db.prepare('INSERT OR REPLACE INTO model_pools VALUES(?,?,?)').run(provider, model, pool);
+    // A newly discovered sibling model must inherit, not replace, an operator's pool override.
+    if (
+      previous &&
+      q.source !== 'manual' &&
+      (previous.reported?.source ?? previous.source) === 'manual'
+    )
+      return false;
     // A new official observation already includes consumed upstream allowance.
-    if (prev && q.source === 'official' && q.observedAt <= JSON.parse(prev.snapshot).observedAt)
-      return;
+    if (
+      previous &&
+      q.source === 'official' &&
+      (q.observedAt < previous.observedAt ||
+        (q.observedAt === previous.observedAt &&
+          JSON.stringify(q.windows) === JSON.stringify(previous.windows)))
+    )
+      return false;
     this.db
       .prepare(
         'INSERT OR REPLACE INTO quota_pools(provider,pool,snapshot,requests,tokens,credits) VALUES(?,?,?,0,0,0)',
       )
       .run(provider, pool, JSON.stringify({ ...q, pool }));
+    return true;
   }
   getQuota(provider: string, model: string): QuotaSnapshot | undefined {
     const row = this.db

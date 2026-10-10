@@ -142,7 +142,9 @@ export async function antigravityHealth(
     return {
       available: true,
       detail:
-        'Antigravity CLI ' + version + ' present; cached account login required; quota unknown',
+        'Antigravity CLI ' +
+        version +
+        ' present; cached account login required; quota queried separately',
     };
   } catch (error) {
     checkAbort(signal);

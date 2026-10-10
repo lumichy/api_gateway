@@ -203,6 +203,59 @@ export function createGateway(options: GatewayOptions) {
           json(res, 200, { status: 'saved', source: 'manual' });
           return;
         }
+        if (url.pathname === '/admin/quota/refresh' && req.method === 'POST') {
+          const b = await body(req);
+          if (
+            !b ||
+            typeof b !== 'object' ||
+            Array.isArray(b) ||
+            Object.keys(b).some((k) => !['provider', 'model'].includes(k)) ||
+            (b.provider !== undefined && !options.providers.some((p) => p.id === b.provider)) ||
+            (b.model !== undefined &&
+              (b.provider === undefined ||
+                !options.providers.find((p) => p.id === b.provider)?.models.includes(b.model)))
+          )
+            throw new GatewayError('invalid_request', 'Invalid quota refresh provider/model');
+          const providers = await Promise.all(
+            options.providers
+              .filter((p) => b.provider === undefined || p.id === b.provider)
+              .map(async (p) => {
+                const model: string = b.model ?? p.models[0];
+                let quota: QuotaSnapshot;
+                try {
+                  const probe = AbortSignal.any([control.signal, AbortSignal.timeout(10000)]);
+                  quota = p.enabled
+                    ? await abortable(p.quota(model, probe), probe)
+                    : {
+                        source: 'unknown',
+                        observedAt: Date.now(),
+                        windows: [],
+                        detail: 'Provider disabled',
+                      };
+                } catch {
+                  quota = {
+                    source: 'unknown',
+                    observedAt: Date.now(),
+                    windows: [],
+                    detail: 'Quota query failed or timed out',
+                  };
+                }
+                const cached = options.state.getQuota(p.id, model);
+                const manual = (cached?.reported?.source ?? cached?.source) === 'manual';
+                const written = !manual && options.state.saveQuota(p.id, model, quota);
+                const saved = written && quota.source !== 'unknown';
+                return {
+                  id: p.id,
+                  model,
+                  quota,
+                  saved,
+                  effectiveQuota: options.state.getQuota(p.id, model),
+                };
+              }),
+          );
+          json(res, 200, { providers });
+          return;
+        }
         if (url.pathname === '/admin/unblock' && req.method === 'POST') {
           const b = await body(req);
           const p = options.providers.find((p) => p.id === b?.provider);

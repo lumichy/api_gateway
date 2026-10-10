@@ -163,6 +163,7 @@ auto 允许跨供应商回退。显式 provider/model 别名固定供应商，�
 
 - GET /admin/status：适配器能力、额度、冷却和当前租约；没有消息正文或密钥。
 - POST /admin/quota：人工录入/更新额度；时间戳 resetAt 使用 Unix 毫秒。
+- POST /admin/quota/refresh：只读查询所有启用供应商的首个模型，返回最新查询和有效缓存；可传 `provider`、`model`。不调用模型，也不覆盖人工快照。
 - POST /admin/unblock：重置指定 provider/model 的共享池快照和冷却，重新采集。
 - GET /health：无鉴权的最小服务存活信息。
 
@@ -211,15 +212,15 @@ data/、config.local.json、.env、.tools/ 和 node_modules/ 忽略提交。运�
 node --env-file=.env.local src/main.ts --config config.local.json
 ~~~
 
-已启动的后台进程 PID 写在 data/gateway.pid；服务重启后重新运行上述命令。目前启用火山（priority=5）、CodeBuddy（priority=10）、Antigravity（priority=20）和 Codex（priority=30）。Codex 可读取官方百分比额度，auto 优先新鲜已知额度，因此可能先选择 Codex；其余三家余额仍为 unknown，再按 priority 回退。火山支持结构化多轮文本；CodeBuddy 只支持一个 user 和可选的前置 system，多轮请求不能回退到 CodeBuddy。完整工具调用尚不支持。
+已启动的后台进程 PID 写在 data/gateway.pid；服务重启后重新运行上述命令。本机启用火山、CodeBuddy、Antigravity、Codex、Claude、OpenRouter 和 OpenCode Zen；后两家默认不参与 auto。auto 优先新鲜已知额度，因此新增额度来源可能改变选择顺序。火山支持结构化多轮文本；CodeBuddy 只支持一个 user 和可选的前置 system，多轮请求不能回退到 CodeBuddy。完整工具调用尚不支持。
 
 ## 火山 Coding Plan 接入（2026-10-06）
 
 专用端点 https://ark.cn-beijing.volces.com/api/coding/v3，模型 deepseek-v4.1-flash。凭据保存在私有 .env.local 的 ARK_CODING_API_KEY，配置中仅引用变量名。仍使用同一个客户端地址与 Gateway Key；model=auto 自动选择，model=ark/deepseek-v4.1-flash 固定火山。
 
-真实普通和流式请求均返回 200、OK、stop。使用临时人工零额度场景验证 auto 跳过火山并调用真实 CodeBuddy，随后已清除测试快照；这不代表真实火山额度已耗尽。尚未实现火山官方余额自动读取，可通过 /admin/quota 录入已核实额度；余额未知时按优先级选择，真实耗尽或限速由上游错误触发冷却与回退。
+真实普通和流式请求均返回 200、OK、stop。使用临时人工零额度场景验证 auto 跳过火山并调用真实 CodeBuddy，随后已清除测试快照；这不代表真实火山额度已耗尽。额度查询接入情况见下面的“官方额度采集”；余额未知时按优先级选择，真实耗尽或限速由上游错误触发冷却与回退。
 
-火山新增可用模型（2026-10-06，已真实验证）：ark/glm-5.3-flash、ark/doubao-seed-2.1-lite。客户端将 model 设置为对应完整别名即可使用；auto 当前仍优先选择火山的 deepseek-v4.1-flash，不会随机轮换模型。
+火山新增可用模型（2026-10-06，已真实验证）：ark/glm-5.3-flash、ark/doubao-seed-2.1-lite。客户端将 model 设置为对应完整别名即可使用；auto 选择火山时使用其配置的首个模型 deepseek-v4.1-flash，不会随机轮换模型。
 
 ## Codex CLI 与 Claude Code（2026-10-10）
 
@@ -232,3 +233,35 @@ Claude 使用保留账户登录的 `--safe-mode`，禁用工具、MCP、用户 h
 两个 CLI 都仅接受一个 user 和可选的前置 system；多轮请求继续由支持结构化历史的供应商处理。详见 [验证记录](docs/verification.md) 和 [适配器契约](src/adapters/README.md)。
 
 Antigravity 1.3.2 已完成工具隔离、两个模型的 HTTP/SSE 和模拟零额度回退验证并恢复。已验证版本使用明确白名单；未来未验证的升级仍会被拒绝，需要重新检查启动参数、事件协议和工具隔离后加入。
+
+## 官方额度采集（2026-10-10）
+
+| Provider | 自动采集方式 | 边界 |
+| --- | --- | --- |
+| Codex | 官方 app-server `account/rateLimits/read` | 订阅的百分比窗口 |
+| Antigravity | CLI 1.3.3 的只读 `/usage` JSON | Gemini 与 Claude/GPT 各自共享短期、每周窗口；不启动模型对话 |
+| OpenRouter | `quotaSource: "openrouter"`，官方 `GET /api/v1/key` | 免费模型每日请求计数；美元用量单独展示，不能代替免费请求余额 |
+| Ark | `quotaSource: "ark-cli"`，官方 `arkcli usage plan --product coding-plan --format json` | 需要安装 CLI 并登录控制面；现有推理 API Key 不能代替登录。只提供窗口百分比 |
+| Claude | 正常请求的官方 `rate_limit_event`，包括实测 CLI 2.1.296 的 `unifiedWindows` | 被动采集窗口利用率和重置时间；没有额外调用模型来查询。未报告窗口保持未知 |
+| CodeBuddy | 暂无已核实的官方 CLI 账户余额查询 | `/cost` 和模型积分倍率不代表剩余额度；使用官方账户 Usage 页面 |
+| OpenCode Zen | 暂无已核实的 API Key 钱包余额查询 | Go 订阅的 usage 接口不代表 Zen 免费模型或钱包额度 |
+
+Ark 的推理仍使用普通 `openai-compatible` adapter，额度采集独立配置；可用 `quotaCommand` 指定官方 `arkcli` 原生可执行文件路径。查询失败返回 `unknown` 和原因，不把登录/网络错误当作额度耗尽。官方快照默认缓存 60 秒；健康检查默认 3 秒，额度查询独立上限 10 秒，因此首次 CLI 查询可能增加几秒延迟。
+
+本机已将官方 Ark CLI 1.0.37 安装到 `.tools/ark-cli`，核对包内 SHA-256 和 Windows 数字签名，并设置私有配置的 `quotaCommand`。控制面尚未登录；用户完成官方 SSO 登录后再刷新即可，不需要修改推理 adapter：
+
+~~~powershell
+& '.\.tools\ark-cli\node_modules\@volcengine\ark-cli\bin\arkcli-windows-amd64.exe' auth login volc-sso
+~~~
+
+运行中的网关可以这样刷新并查看额度：
+
+~~~powershell
+npm run quota
+# 指定供应商或模型组：
+node --env-file=.env.local scripts/quota.ts --provider antigravity --model claude-sonnet-4-6
+~~~
+
+刷新结果中的 `quota` 是本次查询结果，`effectiveQuota` 是调度实际使用的快照；人工快照优先且不会被刷新覆盖。`balances` 只展示美元额度，不参与免费模型请求预算。管理接口需要独立 Admin Key。
+
+官方依据：[OpenRouter 额度字段](https://openrouter.ai/docs/api_reference/limits)、[Antigravity 只读命令更新](https://www.antigravity.google/docs/changelog#v1111)、[Ark 套餐查询](https://github.com/volcengine/ark-cli/blob/main/skills/arkcli-usage/references/arkcli-usage-plan.md)、[Claude SDK 限额事件](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/types.py)、[CodeBuddy Usage 页面](https://www.codebuddy.ai/docs/ide/Account/usage)、[Zen 官方 usage 路由](https://github.com/anomalyco/opencode/blob/dev/packages/console/app/src/routes/zen/go/v1/usage.ts)。

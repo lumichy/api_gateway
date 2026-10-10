@@ -76,9 +76,11 @@ export async function* claudeInvoke(
   config: ProviderConfig,
   request: ChatRequest,
   signal: AbortSignal,
+  observeEvent?: (event: unknown) => void,
 ): AsyncGenerator<ProviderEvent> {
   yield* printCliInvoke(config, request, signal, {
     command: config.command ?? 'claude',
+    observeEvent,
     args: (system) => [
       ...(config.args ?? []),
       ...printCliArgs(request.model),

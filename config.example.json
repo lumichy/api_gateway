@@ -10,11 +10,10 @@
     {
       "id": "ark",
       "type": "openai-compatible",
+      "quotaSource": "ark-cli",
       "allowAuto": true,
       "baseUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
-      "models": [
-        "doubao-seed-code"
-      ],
+      "models": ["doubao-seed-code"],
       "enabled": false,
       "billingVerified": false,
       "apiKeyEnv": "ARK_CODING_API_KEY",
@@ -24,9 +23,7 @@
     {
       "id": "claude",
       "type": "claude",
-      "models": [
-        "sonnet"
-      ],
+      "models": ["sonnet"],
       "enabled": false,
       "billingVerified": false,
       "command": "claude",
@@ -37,9 +34,7 @@
       "id": "codex",
       "type": "codex",
       "mode": "exec",
-      "models": [
-        "gpt-6-sol"
-      ],
+      "models": ["gpt-6-sol"],
       "enabled": false,
       "billingVerified": false,
       "command": "codex",
@@ -49,9 +44,7 @@
     {
       "id": "codebuddy",
       "type": "codebuddy",
-      "models": [
-        "REPLACE_WITH_ACCOUNT_MODEL"
-      ],
+      "models": ["REPLACE_WITH_ACCOUNT_MODEL"],
       "enabled": false,
       "billingVerified": false,
       "command": "codebuddy",
@@ -61,13 +54,24 @@
     {
       "id": "antigravity",
       "type": "antigravity",
-      "models": [
-        "REPLACE_WITH_ACCOUNT_MODEL"
-      ],
+      "models": ["REPLACE_WITH_ACCOUNT_MODEL"],
       "enabled": false,
       "billingVerified": false,
       "command": "agy",
       "priority": 50,
+      "maxConcurrency": 1
+    },
+    {
+      "id": "openrouter",
+      "type": "openai-compatible",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "quotaSource": "openrouter",
+      "models": ["openrouter/free"],
+      "enabled": false,
+      "billingVerified": false,
+      "allowAuto": false,
+      "priority": 100,
       "maxConcurrency": 1
     }
   ]

@@ -51,3 +51,70 @@ test('pure provider preflight filters unsupported roles before dispatch',async()
 test('negative reported token usage never increases available quota',()=>{const s=new State(':memory:');try{s.saveQuota('a','default',{source:'manual',observedAt:Date.now(),windows:[{unit:'tokens',remaining:100,limit:100,resetAt:null}]});s.consume('a','default',{total_tokens:-5},{requests:1,tokens:4});assert.equal(s.getQuota('a','default')!.windows[0].remaining,96);}finally{s.close();}});
 test('many tiny nonstream deltas are aggregated into bounded routed events',async()=>{const s=new State(':memory:');try{const a=provider('a');a.invoke=async function*(){for(let i=0;i<5000;i++)yield {type:'text',text:'x'};yield {type:'done'};};const out=await collect(new Router([a],s).run(request));assert.equal(out.filter(e=>e.type==='text').map((e:any)=>e.text).join('').length,5000);assert.ok(out.length<20);}finally{s.close();}});
 test('hung health candidate cannot block a healthy provider',async()=>{const s=new State(':memory:');try{const a=provider('a');a.health=()=>new Promise(()=>{});const start=Date.now();const out=await collect(new Router([a,provider('b')],s,{timeoutMs:200,probeTimeoutMs:30}).run(request));assert.equal(out[0].text,'b');assert.ok(Date.now()-start<150);}finally{s.close();}});
+
+test('quota CLI receives a separate deadline from the short health probe', async () => {
+  const s=new State(':memory:');
+  try {
+    const a=provider('a');
+    a.quota=async(signalModel,signal)=>{
+      await new Promise(resolve=>setTimeout(resolve,60));
+      signal.throwIfAborted();return quota(80);
+    };
+    const out=await collect(new Router([a],s,{timeoutMs:500,probeTimeoutMs:20,quotaProbeTimeoutMs:150}).run(request));
+    assert.equal(out[0].text,'a');
+  }finally{s.close();}
+});
+
+test('passive official quota observations do not overwrite a manual override after completion', async () => {
+  const s=new State(':memory:');
+  try {
+    s.saveQuota('a','default',{...quota(10),source:'manual'});
+    const a=provider('a');a.quota=async()=>({source:'official',observedAt:Date.now(),windows:[{unit:'requests',remaining:80,limit:100,resetAt:null}]});
+    await collect(new Router([a],s).run(request));
+    assert.equal(s.getQuota('a','default')?.reported?.source ?? s.getQuota('a','default')?.source,'manual');
+  }finally{s.close();}
+});
+
+test('failed optional quota query does not disable a healthy pinned provider', async () => {
+  const s=new State(':memory:');
+  try {
+    const a=provider('a');a.quota=()=>new Promise(()=>{});
+    const out=await collect(new Router([a],s,{timeoutMs:300,probeTimeoutMs:10,quotaProbeTimeoutMs:20})
+      .run({...request,model:'a/default'}));
+    assert.equal(out[0].text,'a');assert.equal(s.getQuota('a','default')?.source,'unknown');
+  }finally{s.close();}
+});
+
+test('manual override arriving during quota query remains authoritative', async () => {
+  const s=new State(':memory:');
+  try {
+    const a=provider('a');let queries=0;
+    a.quota=async()=>{
+      if (++queries===1) s.saveQuota('a','default',{...quota(10),source:'manual'});
+      return {...quota(80),observedAt:Date.now()+1};
+    };
+    await collect(new Router([a],s).run(request));
+    assert.equal(s.getQuota('a','default')?.reported?.source ?? s.getQuota('a','default')?.source,'manual');
+  }finally{s.close();}
+});
+
+test('official sibling model cannot overwrite its destination manual shared pool', () => {
+  const s=new State(':memory:');
+  try {
+    s.saveQuota('a','m1',{...quota(0),source:'manual',pool:'shared'});
+    s.saveQuota('a','m2',{...quota(80),observedAt:Date.now()+10,pool:'shared'});
+    assert.equal(s.getQuota('a','m1')?.source,'manual');
+    assert.equal(s.getQuota('a','m2')?.windows[0].remaining,0);
+  }finally{s.close();}
+});
+
+test('changed official data at the same millisecond updates while duplicates preserve local reservations', () => {
+  const s=new State(':memory:');
+  try {
+    const q=quota(80);s.saveQuota('a','default',q);
+    s.consume('a','default',undefined,{requests:1,tokens:1});
+    s.saveQuota('a','default',q);assert.equal(s.getQuota('a','default')?.windows[0].remaining,79);
+    s.saveQuota('a','default',{...q,windows:[{...q.windows[0],remaining:0}]});
+    assert.equal(s.getQuota('a','default')?.windows[0].remaining,0);
+  }finally{s.close();}
+});

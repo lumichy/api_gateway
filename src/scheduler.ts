@@ -10,13 +10,19 @@ import { State } from './state.ts';
 import { quotaScore, nextReset } from './quota.ts';
 import { GatewayError, safeError, abortable } from './errors.ts';
 import { validUsage } from './usage.ts';
-type Options = { timeoutMs?: number; quotaTtlMs?: number; probeTimeoutMs?: number };
+type Options = {
+  timeoutMs?: number;
+  quotaTtlMs?: number;
+  probeTimeoutMs?: number;
+  quotaProbeTimeoutMs?: number;
+};
 export class Router {
   providers: Provider[];
   state: State;
   timeoutMs: number;
   quotaTtlMs: number;
   probeTimeoutMs: number;
+  quotaProbeTimeoutMs: number;
   constructor(providers: Provider[], state: State, options: Options = {}) {
     this.providers = providers;
     this.state = state;
@@ -24,6 +30,8 @@ export class Router {
     this.quotaTtlMs = options.quotaTtlMs ?? 60000;
     this.probeTimeoutMs =
       options.probeTimeoutMs ?? Math.min(3000, Math.max(10, this.timeoutMs / 4));
+    this.quotaProbeTimeoutMs =
+      options.quotaProbeTimeoutMs ?? Math.min(10000, Math.max(10, this.timeoutMs / 4));
   }
   async *run(request: ChatRequest, parent?: AbortSignal): AsyncGenerator<RoutedEvent> {
     const deadline = Date.now() + this.timeoutMs;
@@ -82,7 +90,7 @@ export class Router {
             exhaustedUntil.push(block.until);
             return null;
           }
-          const probeSignal = AbortSignal.any([signal, AbortSignal.timeout(this.probeTimeoutMs)]);
+          let probeSignal = AbortSignal.any([signal, AbortSignal.timeout(this.probeTimeoutMs)]);
           try {
             if (!(await abortable(p.health(probeSignal), probeSignal)).available) {
               lastError = new GatewayError(
@@ -97,7 +105,23 @@ export class Router {
               ((cached.reported?.source ?? cached.source) !== 'manual' &&
                 (cached.source === 'unknown' || Date.now() - cached.observedAt > this.quotaTtlMs))
             ) {
-              const q = await abortable(p.quota(model, probeSignal), probeSignal);
+              // Account usage commands can take longer than a local CLI health check.
+              probeSignal = AbortSignal.any([
+                signal,
+                AbortSignal.timeout(this.quotaProbeTimeoutMs),
+              ]);
+              let q: QuotaSnapshot;
+              try {
+                q = await abortable(p.quota(model, probeSignal), probeSignal);
+              } catch {
+                if (signal.aborted) throw new GatewayError('cancelled', 'Request cancelled');
+                q = {
+                  source: 'unknown',
+                  observedAt: Date.now(),
+                  windows: [],
+                  detail: 'Optional quota query failed or timed out; provider remains available',
+                };
+              }
               this.state.saveQuota(p.id, model, q);
             }
             const q = this.state.getQuota(p.id, model);
@@ -235,7 +259,12 @@ export class Router {
           ]);
           try {
             const q = await abortable(p.quota(model, refreshSignal), refreshSignal);
-            if (q.source === 'official') this.state.saveQuota(p.id, model, q);
+            const current = this.state.getQuota(p.id, model);
+            if (
+              q.source === 'official' &&
+              (current?.reported?.source ?? current?.source) !== 'manual'
+            )
+              this.state.saveQuota(p.id, model, q);
           } catch {}
           if (signal.aborted) throw new GatewayError('cancelled', 'Request cancelled');
           for (const e of buffered) yield e;

@@ -15,7 +15,7 @@ export function quotaScore(
     if (remaining === null) continue;
     if (
       (snapshot.reported?.source ?? snapshot.source) !== 'manual' &&
-      now - snapshot.observedAt > ttl &&
+      now - (w.observedAt ?? snapshot.observedAt) > ttl &&
       !(remaining <= 0 && w.resetAt !== null)
     )
       continue;

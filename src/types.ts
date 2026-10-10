@@ -5,6 +5,8 @@ export type ProviderEvent =
   | { type: 'text'; text: string }
   | { type: 'done'; usage?: Usage; finishReason?: 'stop' | 'length' };
 export type QuotaWindow = {
+  name?: string;
+  observedAt?: number;
   unit: 'requests' | 'tokens' | 'credits' | 'percent';
   remaining: number | null;
   limit?: number | null;
@@ -15,6 +17,8 @@ export type QuotaSnapshot = {
   source: 'official' | 'manual' | 'estimated' | 'unknown';
   observedAt: number;
   pool?: string;
+  detail?: string;
+  balances?: { unit: 'USD'; remaining: number | null; limit: number | null; used: number }[];
   windows: QuotaWindow[];
   reported?: QuotaSnapshot;
 };

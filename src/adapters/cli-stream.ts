@@ -19,6 +19,7 @@ type PrintCliOptions = {
   environment?: () => NodeJS.ProcessEnv;
   prepare?: (directory: string) => Promise<void>;
   validateInit?: (event: { apiKeySource?: unknown }) => void;
+  observeEvent?: (event: unknown) => void;
 };
 export function printCliArgs(model: string): string[] {
   return [
@@ -105,6 +106,7 @@ export async function* printCliInvoke(
         event.message?.content?.some((b: any) => b.type === 'tool_use')
       )
         throw new GatewayError('unsupported', 'Unexpected CLI tool call');
+      options.observeEvent?.(event);
       if (event.type === 'result') terminal = event;
     }
     checkAbort(signal);

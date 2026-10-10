@@ -25,6 +25,7 @@ Configuration:
  billingVerified?: boolean,
  allowAuto?: boolean,
  apiKeyEnv?: string, baseUrl?: string,
+ quotaSource?: 'openrouter' | 'ark-cli', quotaCommand?: string,
  command?: string, args?: string[],
  mode?: 'app-server' | 'responses' | 'exec', tokenEnv?: string,
  demo?: { remaining?: number | null, fail?: string, text?: string }
@@ -38,14 +39,15 @@ Only environment-variable names belong in configuration; credential values do no
 | Path | Enable conditions | Request semantics | Quota |
 | --- | --- | --- | --- |
 | Demo | Enabled by default; no account | Local configured response | Manual remaining requests, null if omitted |
-| OpenAI compatible | Explicit enabled/billingVerified, baseUrl and apiKeyEnv | Structured text messages; slash-separated upstream models | Unknown unless manually supplied; auto disabled by default |
-| Claude | Official CLI with documented flags, subscription login, verified billing for print mode | One user message, optionally one leading system message; history/developer rejected | Unknown |
+| OpenAI compatible | Explicit enabled/billingVerified, baseUrl and apiKeyEnv | Structured text messages; slash-separated upstream models | Optional explicit quotaSource; inference transport stays generic; auto disabled by default |
+| Claude | Official CLI with documented flags, subscription login, verified billing for print mode | One user message, optionally one leading system message; history/developer rejected | Partial official rate_limit_event observations from existing requests; otherwise unknown |
+| Antigravity | Verified CLI 1.3.3 for quota, approved profile, subscription login | One user and optional leading system | Official read-only /usage, separate Gemini and third-party groups |
 | CodeBuddy | Official CLI, supported no-tools flags, subscription login and verified billing | One user with optional leading system; history/developer rejected | Unknown |
 | Codex CLI exec | mode:exec, native CLI 0.157.1, ChatGPT account login, verified billing | One user and optional leading system; completed text emitted after successful process exit | Official app-server percentage windows |
 | Codex Responses | mode:responses, tokenEnv naming app-authorized SIWC OAuth access token, eligible plan, authorized inference scope, verified subscription billing | One optional leading system becomes instructions; developer/user/assistant history stays structured | Unknown; never substitutes Codex CLI bucket |
 | Codex app-server | Default mode, official Codex CLI subscription login | Quota read only; inference unavailable | Official percent windows when returned |
 
-Ark, OpenRouter and OpenCode Zen are ordinary `openai-compatible` configurations. Provider ids do not select special behavior. Every API endpoint and key environment reference must be configured explicitly; the adapter has no provider-specific defaults, profiles or endpoint restrictions. The local Ark configuration uses the Coding Plan URL and `allowAuto: true`; generic API auto defaults remain false. Redirects are rejected for every compatible provider.
+Ark, OpenRouter and OpenCode Zen are ordinary `openai-compatible` configurations. Provider ids do not select special behavior. Every inference endpoint and key environment reference must be configured explicitly; the inference adapter has no provider-specific defaults, profiles or endpoint restrictions. Optional `quotaSource` selects separate official telemetry: OpenRouter requires its official API base URL, while `ark-cli` uses a separate `quotaCommand` executable and its own control-plane login. The local Ark configuration uses the Coding Plan URL and `allowAuto: true`; generic API auto defaults remain false. Redirects are rejected for every compatible provider.
 
 Claude Code 2.1.296 launches in a new empty temporary directory with --safe-mode (retains subscription OAuth), --tools "", --strict-mcp-config with empty MCP servers, disabled hooks/slash commands/browser, no permission prompts and no session persistence. API credential and CLAUDE_CODE environment overrides are removed. Auth status must report claude.ai, firstParty and Pro/Max; init apiKeySource must be exactly none. System/registry managed policies and remote-settings caches cause a fail-closed refusal before CLI startup because managed hooks survive safe mode. User text is stdin and optional system is a separate argv value. Unexpected tool calls, inconsistent results or unsuccessful child exit are rejected. Confirm Extra Usage is disabled before enabling. [Official CLI reference](https://code.claude.com/docs/en/cli-reference).
 
