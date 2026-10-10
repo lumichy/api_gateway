@@ -5,6 +5,7 @@ import { Router } from './scheduler.ts';
 import { State } from './state.ts';
 import { GatewayError, safeError, abortable } from './errors.ts';
 import type { ChatRequest, Provider, QuotaSnapshot, QuotaWindow } from './types.ts';
+import { validateChatRequest } from './chat-request.ts';
 export type GatewayOptions = {
   providers: Provider[];
   state: State;
@@ -59,33 +60,7 @@ async function body(req: IncomingMessage): Promise<any> {
   }
 }
 export function validateRequest(value: any): ChatRequest {
-  if (!value || typeof value !== 'object' || Array.isArray(value))
-    throw new GatewayError('invalid_request', 'Expected JSON object');
-  for (const key of Object.keys(value))
-    if (!['model', 'messages', 'stream'].includes(key))
-      throw new GatewayError('unsupported', 'Unsupported request parameter: ' + key);
-  if (typeof value.model !== 'string' || value.model.length > 256 || !value.model)
-    throw new GatewayError('invalid_request', 'model must be a nonempty string');
-  if (value.stream !== undefined && typeof value.stream !== 'boolean')
-    throw new GatewayError('invalid_request', 'stream must be boolean');
-  if (!Array.isArray(value.messages) || value.messages.length === 0 || value.messages.length > 512)
-    throw new GatewayError('invalid_request', 'messages must contain 1 to 512 text messages');
-  const messages = value.messages.map((m: any) => {
-    if (
-      !m ||
-      typeof m !== 'object' ||
-      Array.isArray(m) ||
-      Object.keys(m).some((k) => !['role', 'content'].includes(k)) ||
-      !['system', 'developer', 'user', 'assistant'].includes(m.role) ||
-      typeof m.content !== 'string'
-    )
-      throw new GatewayError(
-        'unsupported',
-        'Only text system, developer, user and assistant messages are supported',
-      );
-    return { role: m.role, content: m.content };
-  });
-  return { model: value.model, messages, stream: value.stream ?? false };
+  return validateChatRequest(value);
 }
 export function validateQuota(
   value: any,
@@ -315,11 +290,14 @@ export function createGateway(options: GatewayOptions) {
         usage: any,
         finishReason = 'stop';
       let started = false;
+      let api = false;
+      let completion: Record<string, any> | undefined;
       for await (const event of router.run(chat, control.signal)) {
         if (!started) {
           res.setHeader('x-gateway-provider', event.providerId);
           res.setHeader('x-gateway-model', event.model);
           started = true;
+          api = event.type === 'chat_chunk' || event.type === 'chat_response';
           if (chat.stream) {
             res.writeHead(200, {
               'content-type': 'text/event-stream; charset=utf-8',
@@ -327,22 +305,31 @@ export function createGateway(options: GatewayOptions) {
               connection: 'keep-alive',
               'x-accel-buffering': 'no',
             });
-            await write(
-              res,
-              'data: ' +
-                JSON.stringify({
-                  id,
-                  object: 'chat.completion.chunk',
-                  created,
-                  model: chat.model,
-                  choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
-                }) +
-                '\n\n',
-              control.signal,
-            );
+            if (!api)
+              await write(
+                res,
+                'data: ' +
+                  JSON.stringify({
+                    id,
+                    object: 'chat.completion.chunk',
+                    created,
+                    model: chat.model,
+                    choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+                  }) +
+                  '\n\n',
+                control.signal,
+              );
           }
         }
-        if (event.type === 'text') {
+        if (event.type === 'chat_chunk') {
+          await write(
+            res,
+            'data: ' + JSON.stringify({ ...event.body, model: chat.model }) + '\n\n',
+            control.signal,
+          );
+        } else if (event.type === 'chat_response') {
+          completion = { ...event.body, model: chat.model };
+        } else if (event.type === 'text') {
           if (chat.stream)
             await write(
               res,
@@ -362,6 +349,15 @@ export function createGateway(options: GatewayOptions) {
           usage = event.usage;
           finishReason = event.finishReason ?? 'stop';
         }
+      }
+      if (api) {
+        if (chat.stream) {
+          await write(res, 'data: [DONE]\n\n', control.signal);
+          res.end();
+        } else {
+          json(res, 200, completion);
+        }
+        return;
       }
       if (chat.stream) {
         await write(

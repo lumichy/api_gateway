@@ -10,6 +10,7 @@ import { State } from './state.ts';
 import { quotaScore, nextReset } from './quota.ts';
 import { GatewayError, safeError, abortable } from './errors.ts';
 import { validUsage } from './usage.ts';
+import { requireTextRequest, requestTokenBudget } from './chat-request.ts';
 type Options = {
   timeoutMs?: number;
   quotaTtlMs?: number;
@@ -80,6 +81,7 @@ export class Router {
             return null;
           }
           try {
+            if (!p.capabilities.chat) requireTextRequest(request);
             p.validate?.({ ...request, model });
           } catch (e) {
             lastError = safeError(e);
@@ -171,9 +173,7 @@ export class Router {
           continue;
         const cost = {
           requests: p.reservationCosts?.requests ?? 1,
-          tokens:
-            request.messages.reduce((n, m) => n + Buffer.byteLength(m.content), 0) +
-            (p.reservationCosts?.outputTokens ?? 4096),
+          tokens: requestTokenBudget(request, p.reservationCosts?.outputTokens ?? 4096),
           credits: p.reservationCosts?.credits,
         };
         const lease = this.state.reserve(
@@ -198,6 +198,7 @@ export class Router {
           bytes = 0,
           events = 0;
         let usage: Usage | undefined;
+        let eventMode: 'text' | 'chat' | undefined;
         const buffered: RoutedEvent[] = [];
         let parts: string[] = [];
         let partBytes = 0;
@@ -220,6 +221,9 @@ export class Router {
             if (done)
               throw new GatewayError('transient', 'Upstream emitted events after completion');
             if (event.type === 'text') {
+              if (eventMode === 'chat')
+                throw new GatewayError('transient', 'Mixed upstream response protocols');
+              eventMode = 'text';
               if (typeof event.text !== 'string')
                 throw new GatewayError('transient', 'Invalid upstream text event');
               if (!event.text) continue;
@@ -234,6 +238,22 @@ export class Router {
                 parts.push(event.text);
                 partBytes += size;
                 if (parts.length >= 1024 || partBytes >= 65536) flush();
+              }
+            } else if (event.type === 'chat_chunk' || event.type === 'chat_response') {
+              if (eventMode === 'text' || request.stream !== (event.type === 'chat_chunk'))
+                throw new GatewayError('transient', 'Unexpected upstream response protocol');
+              eventMode = 'chat';
+              bytes += Buffer.byteLength(JSON.stringify(event.body));
+              if (bytes > 16 * 1024 * 1024)
+                throw new GatewayError('transient', 'Upstream response exceeds gateway limit');
+              usage = validUsage(event.body.usage) ?? usage;
+              if (request.stream) {
+                committed = true;
+                yield { ...event, providerId: p.id, model };
+              } else {
+                if (buffered.length)
+                  throw new GatewayError('transient', 'Multiple upstream completions');
+                buffered.push({ ...event, providerId: p.id, model });
               }
             } else if (event.type === 'done') {
               done = true;

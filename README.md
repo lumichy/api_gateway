@@ -1,267 +1,365 @@
-# AI 订阅统一网关
+# Subscription AI Gateway (subscription-ai-gateway)
 
-个人、本机运行的文本 AI 网关。客户端固定连接一个 OpenAI 兼容地址，网关选择可用订阅，并在尚未交付回答时自动回退。
+[English](README.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
-**当前交付边界：** 已真实接通 CodeBuddy、火山 Coding Plan、Antigravity CLI、Codex CLI 和 Claude Code。五家均已启用并通过各自真实调用验证。统一入口支持纯文本、SSE 与自动回退；完整编码工具调用不支持，五家的精确官方剩余额度尚未全部接通。
+## What this project does
 
-## 立即运行演示
+A **personal AI gateway that runs locally**. It combines multiple AI providers, using subscription accounts or API services, behind one OpenAI-compatible endpoint: clients always connect to `http://127.0.0.1:8787/v1`. With `auto`, the gateway selects a provider based on request capabilities, remaining quota and availability, and attempts fallback on quota exhaustion, rate limits, authentication failures or temporary errors.
 
-需要 Node.js 24 或更新版本。运行服务没有第三方运行时依赖。
+Core features:
 
-~~~powershell
-cd C:\lumichy\codex\api_gateway
-node src/main.ts --config config.demo.json
-~~~
+- **One endpoint**: standard `/v1/chat/completions`, compatible with OpenAI client SDKs, with streaming SSE support.
+- **Automatic routing**: remaining-quota scoring, cooldowns and concurrency reservations. Non-streaming requests can fall back before completion depending on the error type; streaming requests never switch providers after emitting any chunk.
+- **Quota telemetry**: official sources are preferred. Unavailable quota is marked `unknown`; balances are never invented.
+- **Capability-aware routing**: compatible APIs forward tools, multimodal messages and extension parameters. Unsupported CLI requests return 400; `auto` selects only providers that support the request.
 
-也可以运行 npm run demo 或 .\scripts\start.ps1 -Demo。
+This is a **local service for one user**: it listens only on loopback addresses, all clients share one key and the same quota, and it provides no conversation memory or sticky routing. It is not suitable for shared or multi-tenant deployment.
 
-演示使用固定开发凭据，监听本机回环地址：
+Node.js ≥ 24 runs the TypeScript source directly. There are **no third-party runtime dependencies**: the gateway uses built-in modules such as `node:http`, `node:sqlite` and `node:child_process`. No build step is required.
 
-- Base URL：http://127.0.0.1:8787/v1
-- Gateway Key：demo-local-gateway-key-12345678
-- 模型：auto
-- Admin Key：demo-local-admin-key-1234567890
+## Installation
 
-~~~powershell
-$payload = @{model='auto'; messages=@(@{role='user'; content='你好'})} | ConvertTo-Json -Depth 8
-Invoke-RestMethod -Uri http://127.0.0.1:8787/v1/chat/completions -Method Post -ContentType 'application/json' -Headers @{Authorization='Bearer demo-local-gateway-key-12345678'} -Body ([Text.Encoding]::UTF8.GetBytes($payload))
-~~~
+```powershell
+git clone <repository-url> api_gateway
+cd api_gateway
+```
 
-演示第一家在调用时报告额度耗尽，第二家返回回答。响应头 X-Gateway-Provider 可确认实际供应商。演示额度有限，调用后的估算和冷却状态保存到 data/demo.sqlite；重启保留状态。可通过管理接口重置测试状态。
+Node.js 24 or later is required. No `npm install` is needed to run the gateway. During development, `npm install` installs TypeScript and Prettier for type checking and formatting.
 
-## 配置真实订阅
+Check the environment:
 
-### 通用 OpenAI 兼容 API
+```powershell
+node --version          # Requires v24+
+node scripts/doctor.ts --config config.example.json
+```
 
-`type: "openai-compatible"` 可接入使用 Bearer API Key 的 Chat Completions 服务。将以下条目加入 `config.local.json` 的 `providers`，把 API Key 放入 `OPENROUTER_API_KEY` 环境变量或本机私有 `.env.local`。`models` 填服务商实际提供的模型 ID；允许 `厂商/模型`，调用网关时再加 provider 前缀，例如 `openrouter/openai/gpt-4`。
+`doctor` performs pre-start diagnostics: it validates configuration and checks enabled providers' executables, credential environment variables and some CLI login states. It sends no inference requests and displays no keys. It does not guarantee upstream connectivity, model access or remaining quota.
+
+## Configuration
+
+### 1. Prepare keys
+
+The gateway uses two separate keys, each at least 24 characters long:
+
+- `GATEWAY_KEY`: client access to inference endpoints.
+- `GATEWAY_ADMIN_KEY`: administrative access to status, manual quota entry and unblocking.
+
+The two keys must differ; otherwise anyone with the inference key could access the administrative endpoints.
+
+Configuration files contain **only environment variable names**. Actual keys always come from environment variables, so configuration files can be committed safely. Use a private environment file such as `.env.local`, which is excluded from Git:
+
+```
+GATEWAY_KEY=a-random-value-of-at-least-24-characters
+GATEWAY_ADMIN_KEY=another-random-value-of-at-least-24-characters
+```
+
+### 2. Create a configuration file
+
+Copy and edit the example:
+
+```powershell
+Copy-Item config.example.json config.local.json
+```
+
+Top-level fields:
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `host` | `127.0.0.1` | Only `127.0.0.1` or `::1` is allowed; other values prevent startup. |
+| `port` | `8787` | 1–65535. |
+| `statePath` | `data/gateway.sqlite` | SQLite state database; relative paths resolve against the configuration file's directory. |
+| `gatewayKeyEnv` / `adminKeyEnv` | `GATEWAY_KEY` / `GATEWAY_ADMIN_KEY` | Environment variable names. |
+| `timeoutMs` | `120000` | Total time budget per request, including all fallback attempts; 100–600000. |
+| `quotaTtlMs` | `60000` | Quota snapshot freshness interval; 100–3600000. |
+| `providers` | — | List of 1–32 providers. |
+
+The current `config.example.json` contains models, enablement flags and executable paths copied from the local configuration. It is not a portable template with all providers disabled. When copying it to another machine, review paths, environment variables and enabled providers. Actual keys remain in the private environment file.
+
+Fields shared by all providers:
+
+| Field | Description |
+| --- | --- |
+| `id` | Unique lowercase identifier; also the routing alias prefix (`id/model`). |
+| `type` | `openai-compatible` / `codex` / `claude` / `codebuddy` / `antigravity`. |
+| `models` | List of 1–64 models. `openai-compatible` model names may contain `/`, such as `nvidia/model:free`; other types prohibit `/`. `auto` uses the first model in the list. |
+| `enabled` + `billingVerified` | **Both must be `true` to enable the provider.** The latter records the operator's confirmation of the intended billing path: the intended subscription for a CLI, or the intended account's free quota or accepted API billing for an API. |
+| `allowAuto` | Whether the provider participates in `auto` routing; see each provider type below. |
+| `priority` | Lower values win ties; 0–10000, default 100. |
+| `maxConcurrency` | Maximum concurrent requests for this provider; 1–32, default 1. |
+
+Real providers are disabled by default in the implementation, but configuration can explicitly enable them. Before enabling a CLI, log in through the official client and verify model access and extra usage billing settings. For an API, configure a valid key and verify model access and billing before setting both flags.
+
+Current local configuration on disk (2026-10-10):
+
+| Provider | `enabled` | First model used by `auto` | `priority` |
+| --- | --- | --- | --- |
+| Ark | `true` | `deepseek-v4.1-flash` | 5 |
+| Agnes | `true` | `agnes-3.0-flash` | 5 |
+| OpenRouter | `true` | `nvidia/nemotron-3-ultra-550b-a55b:free` | 100 |
+| CodeBuddy / Antigravity / Codex / Claude | `false` | Not eligible for routing | Per-provider configuration |
+
+All 7 providers have `allowAuto: true` and `maxConcurrency: 3`; disabled providers remain ineligible. OpenCode Zen has been removed from the local configuration. `config.example.json` still reflects the previous synchronization, with OpenRouter disabled and `openrouter/free` as its first model. The configuration file specified at startup is authoritative.
+
+### 3. Start the gateway
+
+```powershell
+node --env-file=.env.local src/main.ts --config config.local.json
+```
+
+The gateway listens at `http://127.0.0.1:<port>/v1`. Missing gateway keys, invalid configuration fields or malformed API endpoints prevent startup. Provider credentials, CLI login/version issues and model access problems may instead surface during health checks or actual requests.
+
+**Restart the process after changing `config.local.json` or `.env.local`.** Configuration hot reload is not implemented. Let active requests finish, stop the old process, then run the startup command again. On-disk configuration may differ from the running configuration; use `GET /admin/status` and `GET /v1/models` to check what is actually enabled. Manual quota entry, quota refresh and clearing cooldowns take effect immediately through the admin endpoints without a restart.
+
+### 4. Connect a client
+
+Example using the OpenAI Python SDK:
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8787/v1", api_key="YOUR_GATEWAY_KEY")
+result = client.chat.completions.create(
+    model="auto",
+    messages=[{"role": "user", "content": "Explain how the gateway's fallback works."}],
+)
+print(result.choices[0].message.content)
+```
+
+Supported `model` values:
+
+| Value | Behavior |
+| --- | --- |
+| `auto` | Selects by quota, cooldown and priority, subject to `allowAuto`. |
+| `id/model`, such as `claude/sonnet` | Pins the provider; failures are returned directly, with no fallback. |
+| Anything else | 400. |
+
+The `x-gateway-provider` / `x-gateway-model` response headers identify the actual provider and model. The response body's `model` preserves the alias supplied by the client, including `auto`. Errors with a known retry time include a `retry-after` header.
+
+### How `auto` selects a provider
+
+1. Consider only providers with `enabled`, `billingVerified` and `allowAuto` set to `true`. Use each provider's `models[0]`; do not randomly rotate through its model list.
+2. Filter by request capabilities before health checks and quota queries. Requests with tools, multimodal content or generation parameters go only to compatible APIs. Selecting `auto` does not add these capabilities to CLIs.
+3. Exclude candidates that fail health checks, are cooling down or have known zero quota. Attempt to query missing or expired non-manual quota. Failed queries remain unknown and are not treated as quota exhaustion.
+4. Prefer fresh known quota over unknown quota. For multiple quota windows, use the lowest remaining proportion as the score; higher scores win. Break equal scores, or ties between unknown quotas, by ascending `priority`, then alphabetical provider ID.
+5. Attempt concurrency and budget reservations in that order. If a provider is at capacity, try the next one. Attempt each provider at most once. Retryable errors allow fallback; invalid parameters or unsupported requests return immediately. Streaming cannot switch providers once output starts.
+
+For the current on-disk configuration, OpenRouter ranks ahead of Agnes and Ark if it successfully reports fresh, nonzero free daily request quota, even with `priority: 100`, because their quotas are unknown. If all three quotas are unknown, the order is Agnes → Ark → OpenRouter: Agnes and Ark both have priority 5, so their IDs break the tie. Quota, cooldown, concurrency and request capabilities can change this order.
+
+## Provider configuration
+
+There are five provider types. CLI adapters (claude / codebuddy / antigravity / codex exec) share these constraints:
+
+- **Single-turn requests**: one user message with an optional preceding system instruction. Multi-turn `auto` requests are filtered to providers supporting structured history (openai-compatible / codex responses). An explicit CLI alias rejects unsupported history without fallback.
+- **Version compatibility**: Claude and Codex exec use verified pinned versions; Antigravity uses a verified version allowlist. CodeBuddy checks executable availability and validates the actual event protocol. Recheck compatibility after upgrades.
+- **Argument allowlist**: `command` must be node.exe or a native executable; shells and `.cmd` files are prohibited. `args` may contain only one absolute JS entry path. Runtime flags, settings overrides and embedded prompts are rejected.
+- **Runtime validation**: tool-disabling arguments, dedicated agents with no tools and event checks restrict CLI tools. Actual tool calls or initialization data violating the adapter contract cause rejection. Antigravity's global tool catalog does not represent the selected agent's tool permissions.
+
+---
+
+### openai-compatible — generic API integration
+
+**Any HTTP service using a Bearer key and the OpenAI Chat Completions protocol can be added through configuration alone, with no code changes.**
 
 ```json
 {
-  "id": "openrouter",
+  "id": "ark",
   "type": "openai-compatible",
-  "baseUrl": "https://openrouter.ai/api/v1",
-  "apiKeyEnv": "OPENROUTER_API_KEY",
-  "models": ["openai/gpt-4"],
+  "baseUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
+  "apiKeyEnv": "ARK_CODING_API_KEY",
+  "models": ["deepseek-v4.1-flash", "glm-5.3-flash", "doubao-seed-2.1-lite"],
+  "quotaSource": "ark-cli",
+  "allowAuto": true,
   "enabled": false,
   "billingVerified": false,
-  "allowAuto": false,
-  "priority": 100,
-  "maxConcurrency": 1
+  "priority": 10,
+  "maxConcurrency": 3
 }
 ```
 
-模型 ID 是配置示例，实际选用前请核对服务商目录。确认该 API 的付费方式后，将 `enabled` 和 `billingVerified` 设为 `true`。通用 API 默认不参与 `auto`；需要自动回退到此 API 时显式设置 `allowAuto: true`。没有余额查询实现的 API，其额度显示为 `unknown`，按现有调度规则参与排序。模型列表发布不代表所有模型已真实调用成功。配置修改后需重启服务。
+Key points:
 
-`baseUrl` 指向 API 根路径，adapter 自动追加 `/chat/completions`，并复用现有 SSE、取消、错误及回退处理。支持当前网关的文本消息与多轮历史；工具、图片和 Responses 不在本次范围内。[OpenRouter 官方接口说明](https://openrouter.ai/docs/api/api-reference/chat/send-chat-completion-request)。
+- Set `baseUrl` to the **API base path**; the gateway appends `/chat/completions`. URLs are validated: only http/https, with no embedded credentials, query strings or fragments. Redirects are not followed.
+- **Inference uses the same generic adapter** for Ark, OpenRouter, Agnes and similar services. Configuration supplies their endpoints and keys; no special inference type is selected by provider ID. Optional quota collectors have separate official-source requirements.
+- Structured multi-turn history and system instructions are forwarded unchanged, without protocol translation.
+- **`allowAuto` defaults to `false`**. Token-billed APIs can incur charges if selected by a fallback chain, so automatic routing requires an explicit `true`. Explicit aliases (`id/model`) are unaffected.
 
-火山方舟、OpenRouter、OpenCode Zen 均使用 `type: "openai-compatible"`，采用完全相同的地址、密钥和模型配置规则。`ark` 只是 provider 的 `id`；没有专用类型、profile、硬编码地址或默认密钥变量。原来的 `type: "ark"` 和 `profile` 字段已移除，旧配置需按 `config.example.json` 迁移。当前 Ark 的 Coding Plan 地址保存在配置中；它参与 `auto` 是因为配置了 `allowAuto: true`。
+**Quota telemetry extensions.** Quota defaults to `unknown`, with routing then ordered by `priority`. Set the optional `quotaSource` to use official telemetry:
 
-~~~powershell
-Copy-Item -LiteralPath config.example.json -Destination config.local.json
-$env:GATEWAY_KEY = '设置至少24字符的独立网关密钥'
-$env:GATEWAY_ADMIN_KEY = '设置另一个至少24字符的管理密钥'
-node scripts/doctor.ts --config config.local.json
-node src/main.ts --config config.local.json
-~~~
+| `quotaSource` | Quota source | Additional requirements |
+| --- | --- | --- |
+| `"openrouter"` | Official key endpoint: daily request counts for free models, plus the API key's USD usage and spending limit. | `baseUrl` must be the official `https://openrouter.ai/api/v1`. USD data is neither wallet balance nor a substitute for remaining free requests. |
+| `"ark-cli"` | Official arkcli: reported session / weekly / monthly percentage windows. | Install and log in to official arkcli; `quotaCommand` can specify a native executable. Separate control-plane credentials are required; an inference API key cannot replace them. |
 
-将上面的密钥示例替换为自己的随机值。普通 JSON 配置只保存环境变量名；密钥通过环境变量传入。服务只允许 127.0.0.1 或 ::1。管理和模型调用使用不同密钥。真实供应商需要同时设置 enabled:true 和 billingVerified:true；后者是操作者确认，不能代替实际扣费核对。
+Adding a new compatible API requires **JSON configuration, a key in an environment variable and both enablement flags**. A service supporting Chat Completions requires no new adapter code.
 
-所有供应商初始关闭。先使用官方客户端完成登录或授权，确认目标模型可用，并关闭额外按量付费，再启用该适配器。doctor 不发推理请求、不消耗模型额度，不会显示密钥；available 仅表示本地检查通过，liveVerified 始终 false，直到通过独立真实验收记录验证。
+Agnes is included in the local and example configurations: model alias `agnes/agnes-3.0-flash`, base URL `https://apihub.agnes-ai.com/v1`, and key variable `AGNES_API_KEY`. It is enabled locally and has been verified with actual requests, with explicit `allowAuto: true` and `maxConcurrency: 3`. Quota collection is not integrated, so its quota is `unknown`. On a new installation, supply your own key and verify billing. See the [official Agnes documentation](https://www.agnes-ai.com/en/docs/agnes-30-flash) for the model and endpoint.
 
-| 供应商 | 实现与启用方式 | 消息能力 | 当前余额来源 |
-| --- | --- | --- | --- |
-| 火山方舟 Coding Plan | 通用 openai-compatible adapter；配置 Coding Plan 地址和 API Key 环境变量 | 文本角色、多轮 | 未核实稳定机器查询，unknown 或人工快照 |
-| Claude | 本机官方 CLI 的订阅登录；固定可执行路径 | 一个 user，可选一个前置 system | unknown 或人工快照 |
-| CodeBuddy | 官方 CLI 订阅登录；固定可执行路径 | 一个 user，可选一个前置 system | unknown 或人工快照；统计不等于剩余额度 |
-| ChatGPT SIWC（可选） | 官方 SIWC 授权给本应用的访问令牌放入 CHATGPT_SIWC_ACCESS_TOKEN；mode:responses | 结构化多轮；可选一个前置 system | unknown；不能混用 Codex 的额度桶 |
-| Codex CLI | 官方订阅登录；mode:exec，CLI 0.157.1 | 一个 user，可选前置 system；SSE 在回答完成后输出 | 官方 RPC 多窗口百分比 |
-| Codex App Server | 可单独通过官方 RPC 读取 quota | 推理停用，未核实完整禁用工具配置 | 官方，多额度桶；不等于 SIWC Responses 权益 |
-| Antigravity | 本机官方 agy CLI 1.3.1/1.3.2/1.3.3 缓存账号；单次隔离的空工具 Agent；全局 hooks 需单独确认 | 一个 user，可选一个前置 system | unknown 或人工快照；/usage 未作为机器接口 |
+#### Chat Completions features
 
-CLI 适配器不把完整历史压成带角色标签的字符串。多轮请求会筛选到支持结构化历史的供应商；若没有匹配者，返回明确 400。可选 system+user 是单轮，已单独验证。不能因需要回退而放宽消息语义。
+`openai-compatible` preserves request parameters and message JSON: `tools`, `tool_choice`, `parallel_tool_calls`, tool result messages, legacy `functions/function_call`, `response_format`, `temperature`, `top_p`, `stop`, `max_tokens/max_completion_tokens`, `n`, `logprobs`, `stream_options`, reasoning options and provider-specific fields. Content arrays containing images, audio or files are forwarded unchanged. Availability depends on the upstream model. The gateway does not execute tools or download media from messages.
 
-### Antigravity CLI
+Streaming and non-streaming responses preserve all choices, tool calls, reasoning content, refusals, audio, annotations, logprobs, usage details and extension fields. The returned `model` is the client's gateway alias; the actual provider and model appear in `x-gateway-provider` / `x-gateway-model`. Once any streaming chunk is emitted, providers are never switched, preventing mixed tool arguments or answers.
 
-复用官方 CLI 的 Google 登录，无需把 OAuth 凭据放进网关。Windows 官方默认可执行文件为 `%LOCALAPPDATA%/agy/bin/agy.exe`；先运行官方 `agy models` 确认可用模型，再在 config.local.json 中设置 type:antigravity、command 和 models。已验证版本为1.3.1、1.3.2和1.3.3，本机当前1.3.3。启用需要 enabled:true 与 billingVerified:true；本机已启用并真实验证 gemini-3.8-flash-low 和 gemini-3.1-pro-high 两个模型，priority20。新鲜已知额度优先，unknown 供应商再按 priority 排序。
+Example tool calling with the OpenAI Python client:
 
-客户端固定模型别名为 `antigravity/gemini-3.8-flash-low` 或 `antigravity/gemini-3.1-pro-high`；`auto` 可在前序供应商耗尽后选择它。地址和 Gateway Key 沿用现有入口。余额 unknown 时按配置优先级回退，不能宣称按精确官方余额选择。
+```python
+import os
+from openai import OpenAI
 
-CLI 不支持每次调用关闭全局 lifecycle hooks。若已配置 hooks，适配器默认拒绝启动；用户明确允许沿用后，通过 approvedHooksSha256 固定已批准配置，配置变化会重新阻止调用。适配器运行时不修改用户全局设置。全局规则、MCP 或插件也会被拒绝，避免干扰隔离的文本调用。CLI 升级后需重新验证适配契约。检查配置可运行 `node scripts/doctor.ts --config config.local.json`。
+client = OpenAI(base_url="http://127.0.0.1:8787/v1", api_key=os.environ["GATEWAY_KEY"])
+messages = [{"role": "user", "content": "What is the temperature in Tokyo now?"}]
+tools = [{"type": "function", "function": {
+    "name": "get_temperature", "description": "Get a city's temperature",
+    "parameters": {"type": "object", "properties": {"city": {"type": "string"}},
+                   "required": ["city"]}
+}}]
+result = client.chat.completions.create(
+    model="ark/deepseek-v4.1-flash", messages=messages,
+    tools=tools, tool_choice="auto",
+)
+answer = result.choices[0].message
+if answer.tool_calls:
+    messages.append(answer.model_dump(exclude_none=True))
+    for call in answer.tool_calls:
+        # Mock result; real applications should validate the tool name/arguments
+        # and execute their own tool.
+        messages.append({"role": "tool", "tool_call_id": call.id,
+                         "content": '{"temperature": 20, "unit": "C"}'})
+    final = client.chat.completions.create(
+        model="ark/deepseek-v4.1-flash", messages=messages, tools=tools,
+    )
+    print(final.choices[0].message.content)
+else:
+    print(answer.content)
+```
 
-本机用户选择关闭 hooks：已将全局配置中 orca-status 的 enabled 设为 false，原配置备份在忽略目录 data/antigravity-hooks.backup-2026-10-07.json。适配器运行时不再修改全局配置。
+CLI and subscription Responses paths still support only their existing text semantics. Extension parameters return `unsupported` rather than being silently ignored. The compatible API's `allowAuto` default is unchanged; tool or multimodal requests using `auto` select only enabled compatible APIs that allow automatic routing. Limits remain 1 MiB per request, 16 MiB per response and 1 MiB per SSE frame.
 
-### 优先接入 CodeBuddy
+### claude
 
-用户选择 CodeBuddy 作为第一家真实验证对象。官方 CLI 已安装到 .tools/codebuddy，已验证版本 2.161.0；用户已确认登录成功且额外按量付费关闭，hy3 已真实调用成功；官方余额和扣费池仍待核实。
+The local official Claude Code CLI, pinned to **2.1.296**.
 
-官方包名称为 @tencent-ai/codebuddy-code。项目内安装与登录助手：
+```json
+{
+  "id": "claude",
+  "type": "claude",
+  "models": ["sonnet"],
+  "command": "claude",
+  "enabled": false,
+  "billingVerified": false,
+  "priority": 20
+}
+```
 
-~~~powershell
-node scripts/login-codebuddy.ts
-# 重装固定版本时：.\scripts\setup-codebuddy.ps1
-~~~
+- Each request starts in a new temporary directory, with `--safe-mode`, no tools or MCP, disabled hooks/slash commands/browser, and no saved sessions. `ANTHROPIC_*` / `CLAUDE_CODE_*` environment variables are stripped to use the subscription login instead of API billing.
+- Health checks require a subscription login: `claude.ai`, firstParty and Pro/Max. System-level managed policies (managed settings / registry) cause rejection before invocation because managed hooks can bypass safe mode.
+- Quota comes from official `rate_limit_event` windows, such as five hours or seven days, observed only in **actual request responses**. There is no separate read-only query; quota remains `unknown` until an event is observed.
+- CLI 2.1.296's `unifiedWindows` has been verified with actual requests. It exposes utilization and reset times across multiple windows. Unreported windows remain unknown and are not converted into invented remaining request counts.
 
-登录助手读取已安装的官方包，生成未启用的 config.local.json，然后运行交互式官方 CLI 供你登录；安装脚本固定使用 2.161.0。登录涉及浏览器授权，需要你亲自完成。也可使用已经安装的官方原生可执行文件，直接修改 command。
+### codebuddy
 
-Windows 网关不运行 .cmd 或 shell 字符串。npm 安装应配置 node.exe 加绝对 JavaScript 入口，例如：
+The local official CodeBuddy CLI; log in using `scripts/login-codebuddy.ts`.
 
-~~~json
+```json
 {
   "id": "codebuddy",
   "type": "codebuddy",
-  "models": ["hy3"],
+  "models": ["REPLACE_WITH_ACCOUNT_MODEL"],
   "command": "C:/Program Files/nodejs/node.exe",
-  "args": ["C:/lumichy/codex/api_gateway/.tools/codebuddy/node_modules/@tencent-ai/codebuddy-code/bin/codebuddy"],
+  "args": ["C:/path/to/.tools/codebuddy/node_modules/@tencent-ai/codebuddy-code/bin/codebuddy"],
   "enabled": false,
   "billingVerified": false
 }
-~~~
+```
 
-实际入口由安装后的 package.json.bin 决定；不要假设一定是 cli.js。setup 脚本自动读取入口。args 只允许 node.exe 的一个绝对 JS 入口（CodeBuddy 官方扩展名为空的 bin/codebuddy 也受支持），禁止附加运行时 flags、设置覆盖或用户 prompt。
+- `args` is one absolute JS entry path for node.exe; the official extensionless `bin/codebuddy` is also accepted. This CLI version's parser does not support wildcards, so the gateway disables approximately 60 built-in tools individually and creates a dedicated agent with no tools.
+- If initialization events still report tools, the request is rejected. Runtime reports are checked rather than relying solely on arguments.
+- Hooks are disabled, MCP configuration is empty, the temporary directory is isolated, and sessions are not saved.
+- No official CLI account balance query has been verified. Quota remains `unknown`; `/cost` and model credit multipliers cannot replace account balance. Enter quota manually through `/admin/quota` if needed.
 
-网关调用 CLI 时创建空工具的专用 Agent，并逐项禁止当前版本在默认初始化阶段和专用 Agent 中提供的工具，同时使用空 MCP 严格配置、禁用 hooks、隔离临时目录和不保存会话。CLI 2.161.0 的空 --tools 和通配符禁用规则不能单独达到这一效果；任何初始化事件仍报告工具时会拒绝请求。版本必须支持这些官方参数，否则请求失败，不退化为可执行本地工具的模式。
+### antigravity
 
-hy3 已由官方错误响应列为该账户可用模型，并通过真实网关请求验证；原先的 default-model 不能作为请求模型。首次真实请求用明确模型别名 codebuddy/hy3，只发送短文本“请只回复 OK”。核对官方账户用量变化和工具初始化事件；确认目标订阅扣费、没有额外 API 计费后再标记 billingVerified:true 并加入 auto。当前项目没有保存任何 CodeBuddy 登录凭据。
+The local official agy CLI, supporting versions 1.3.1–1.3.3. Google login is cached by the official CLI; the gateway does not handle the credentials.
 
-### ChatGPT SIWC 授权
+```json
+{
+  "id": "antigravity",
+  "type": "antigravity",
+  "models": ["gemini-3.8-flash-low"],
+  "command": "C:/Users/<you>/AppData/Local/agy/bin/agy.exe",
+  "enabled": false,
+  "billingVerified": false
+}
+```
 
-这里需要官方 Sign in with ChatGPT 注册/授权产生、授予本应用 plan usage 权限的访问令牌。不能拿已有 Codex 凭据文件的 token 冒充本应用的授权。商业 sk- API key 在该路径被拒绝。
+- Each request creates a uniquely named agent with empty tools/MCP/skills/plugins and an isolated working directory. Commercial API credential environment variables are stripped from the child process to use the cached account.
+- Before invocation, the `~/.gemini` profile is audited. Global instruction files, MCP, plugins or rules cause **immediate rejection if present**. Global hooks require the operator to approve the current configuration's SHA-256 digest through `approvedHooksSha256`; any change requires approval again. The gateway does not alter global user settings.
+- Quota uses the official CLI's read-only `/usage` JSON, requiring 1.3.3. It reads five-hour and weekly percentage windows separately for Gemini and third-party Claude/GPT model groups, without additional model calls.
 
-目前只提供令牌环境变量接口，尚未实现 SIWC 登录 UI 和自动刷新；令牌过期返回需要重新授权的错误并回退其他供应商。该路径需要完成官方注册/授权准备，不能仅凭 Plus/Pro 订阅就称已经可用。
+### codex
 
-## 客户端接入
+Three mutually exclusive modes:
 
-标准 OpenAI Python SDK 示例（需要客户端自己安装 openai）：
-
-~~~python
-from openai import OpenAI
-client = OpenAI(base_url="http://127.0.0.1:8787/v1", api_key="你的 Gateway Key")
-result = client.chat.completions.create(
-    model="auto",
-    messages=[{"role": "user", "content": "解释一下网关的回退机制"}],
-)
-print(result.choices[0].message.content)
-~~~
-
-支持 GET /v1/models、POST /v1/chat/completions、stream:true，以及字符串内容的 system/developer/user/assistant 消息。每家适配器进一步检查是否能保留对应消息语义。
-
-仅支持 model/messages/stream 参数。tools、图片、音频、temperature、max_tokens、JSON Schema 等均明确返回 400。/v1/responses 前台兼容接口尚未实现；不能用于要求工具调用或 Responses 协议的完整编码客户端。
-
-auto 允许跨供应商回退。显式 provider/model 别名固定供应商，不自动改变你指定的模型。流式输出交付第一个文本片段后不切换供应商，避免混合两家的回答；中断时返回 SSE 错误。总截止时间、客户端断开和慢客户端回压都会取消上游并释放额度租约。
-
-## 额度、调度和管理
-
-优先新鲜已知额度，比较每个订阅最紧张窗口的剩余比例；tokens、请求数和积分不相加。余额未知候选作为后备，不能把它标成无限余额。若已知剩余数没有总额度，无法归一比较比例，按配置 priority（较小优先）排序。
-
-共享额度池通过 pool 字段关联模型；任一相关窗口耗尽就排除该池。SQLite 事务预留并发、请求、token 和已配置的积分预算，防止本机并发过量分配。默认输出 token 预估 4096，加输入 UTF-8 字节数形成保守预留；实际计费可能不同，预留不是供应商保证。
-
-用量分为 official/manual/estimated/unknown。原始上游快照保留在 reported；本地已可能消耗的额度只改变估算，取消和失败也会记账。只有新的官方快照才调和远端真实用量。manual 快照通过管理接口更新，不因重启或成功调用自动恢复。
-
-套餐耗尽按 resetAt 屏蔽；不知重置时间时冷却 60 秒，到期只允许一个恢复探测。普通 429 限速按 Retry-After 冷却；认证失败暂停 5 分钟。每家每请求最多尝试一次。官方数据过期时明确降为未知，不伪造余额。
-
-管理接口均使用 Admin Key：
-
-- GET /admin/status：适配器能力、额度、冷却和当前租约；没有消息正文或密钥。
-- POST /admin/quota：人工录入/更新额度；时间戳 resetAt 使用 Unix 毫秒。
-- POST /admin/quota/refresh：只读查询所有启用供应商的首个模型，返回最新查询和有效缓存；可传 `provider`、`model`。不调用模型，也不覆盖人工快照。
-- POST /admin/unblock：重置指定 provider/model 的共享池快照和冷却，重新采集。
-- GET /health：无鉴权的最小服务存活信息。
-
-~~~powershell
-$headers = @{Authorization="Bearer $env:GATEWAY_ADMIN_KEY"}
-$quota = @{provider='codebuddy'; model='你的模型名'; pool='codebuddy-plan'; windows=@(@{unit='credits'; remaining=120; limit=1000; resetAt=$null})} | ConvertTo-Json -Depth 8
-# 积分池还需要可靠的请求成本预算才能预留；目前默认没有该预算，建议先用官方可核实的请求窗口或保持 unknown。
-Invoke-RestMethod -Uri http://127.0.0.1:8787/admin/quota -Method Post -Headers $headers -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes($quota))
-~~~
-
-人工积分字段仅可展示；当前配置尚未暴露积分预算参数，已知积分池默认不参与无法预留成本的请求。可将窗口改为 unit:percent、remaining:12、limit:100 表达余量比例，但比例只用于排序，不能声称精确预留积分。不要将 token 用量当成剩余订阅积分。
-
-## 验证与诊断
-
-~~~powershell
-node --test tests/*.test.ts
-node scripts/doctor.ts --config config.example.json
-# 开发依赖安装后：
-npm run typecheck
-~~~
-
-测试使用真实本地 HTTP 服务、SQLite 临时数据库和子进程协议 fixtures，不需要真实密钥。覆盖请求格式、SSE、401/429、未知/零额度、共享池、并发预留、重启、取消、恢复探测、错误分类、CLI 参数隔离、超大帧、负数用量和不读取数据的 TCP 客户端。
-
-资源限制：请求体 1 MiB、单个上游帧/CLI 行 1 MiB、上游错误体 8 KiB、CLI health 输出 64 KiB、回答文本 16 MiB、每次尝试最多 65536 个事件。非流式文本片段合并，避免为每个字符保存一个事件对象。健康/额度探测并行且有独立超时。
-
-data/、config.local.json、.env、.tools/ 和 node_modules/ 忽略提交。运行时不记录 prompt、OAuth token、API key 或原始上游错误体。
-
-## 官方参考与当前限制
-
-- [火山 Coding Plan 专用接口与额度查询](https://www.volcengine.com/article/37875)
-- [CodeBuddy 官方安装与登录](https://www.codebuddy.cn/docs/cli/quickstart)
-- [CodeBuddy CLI 参数](https://www.codebuddy.cn/docs/cli/cli-reference)
-- [Claude SDK 与订阅的当前说明](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
-- [ChatGPT SIWC 订阅调用](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
-- [SIWC 参数限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
-- [Codex App Server 额度 RPC](https://learn.chatgpt.com/docs/app-server)
-- [Antigravity Headless](https://www.antigravity.google/docs/cli/headless/)
-
-更详细的适配器契约、参数和无法启用的原因见 src/adapters/README.md。方案已完成第一版协议与路由验证；全部五家真实接入、全部精确自动余额采集，以及 SIWC 登录/刷新还未完成。
-
-## 本机已验证的 CodeBuddy 入口（2026-10-02）
-
-配置 config.local.json 已启用 hy3。本机访问凭据存放在 data/client.json；私有环境变量文件为 .env.local，两者已排除提交。客户端使用 base_url=http://127.0.0.1:8787/v1、model=auto 和 client.json 中的 api_key。
-
-~~~powershell
-node --env-file=.env.local src/main.ts --config config.local.json
-~~~
-
-已启动的后台进程 PID 写在 data/gateway.pid；服务重启后重新运行上述命令。本机启用火山、CodeBuddy、Antigravity、Codex、Claude、OpenRouter 和 OpenCode Zen；后两家默认不参与 auto。auto 优先新鲜已知额度，因此新增额度来源可能改变选择顺序。火山支持结构化多轮文本；CodeBuddy 只支持一个 user 和可选的前置 system，多轮请求不能回退到 CodeBuddy。完整工具调用尚不支持。
-
-## 火山 Coding Plan 接入（2026-10-06）
-
-专用端点 https://ark.cn-beijing.volces.com/api/coding/v3，模型 deepseek-v4.1-flash。凭据保存在私有 .env.local 的 ARK_CODING_API_KEY，配置中仅引用变量名。仍使用同一个客户端地址与 Gateway Key；model=auto 自动选择，model=ark/deepseek-v4.1-flash 固定火山。
-
-真实普通和流式请求均返回 200、OK、stop。使用临时人工零额度场景验证 auto 跳过火山并调用真实 CodeBuddy，随后已清除测试快照；这不代表真实火山额度已耗尽。额度查询接入情况见下面的“官方额度采集”；余额未知时按优先级选择，真实耗尽或限速由上游错误触发冷却与回退。
-
-火山新增可用模型（2026-10-06，已真实验证）：ark/glm-5.3-flash、ark/doubao-seed-2.1-lite。客户端将 model 设置为对应完整别名即可使用；auto 选择火山时使用其配置的首个模型 deepseek-v4.1-flash，不会随机轮换模型。
-
-## Codex CLI 与 Claude Code（2026-10-10）
-
-两家均复用本机官方 CLI 的订阅账号登录，无需 API Key，登录凭据留在官方 CLI 中。Codex CLI 0.157.1 已启用，固定别名 `codex/gpt-6-sol`；Claude Code 2.1.296 在用户确认 Extra Usage 已关闭后完成真实验证并启用，固定别名 `claude/sonnet`。地址和 Gateway Key 不变，`auto` 自动选择启用的供应商。显式指定未启用的供应商会返回400 unsupported及配置原因，不再误报429额度耗尽。
-
-Codex 配置使用 `type:codex`、`mode:exec` 和原生可执行路径。Windows 不使用 `.cmd` 启动器；npm 安装的本机路径已写入 config.local.json。使用忽略用户配置和项目规则、无工具/插件/技能、临时会话与隔离目录；升级 CLI 后需重新验证固定版本契约。Codex SSE 在 CLI 完成回答后输出文本，不是逐 token 流。官方额度由独立 app-server RPC 读取，与可选 SIWC Responses 的额度不能混用。
-
-Claude 使用保留账户登录的 `--safe-mode`，禁用工具、MCP、用户 hooks、自定义设置和会话保存。`--bare` 不用于订阅登录。遇到本机受管理策略文件/注册表或远端策略缓存时拒绝调用，避免策略引入 hooks 或付费凭据；不修改用户设置。Claude 剩余额度暂为 unknown，耗尽/限速/认证错误通过现有冷却与回退处理。
-
-两个 CLI 都仅接受一个 user 和可选的前置 system；多轮请求继续由支持结构化历史的供应商处理。详见 [验证记录](docs/verification.md) 和 [适配器契约](src/adapters/README.md)。
-
-Antigravity 1.3.2 已完成工具隔离、两个模型的 HTTP/SSE 和模拟零额度回退验证并恢复。已验证版本使用明确白名单；未来未验证的升级仍会被拒绝，需要重新检查启动参数、事件协议和工具隔离后加入。
-
-## 官方额度采集（2026-10-10）
-
-| Provider | 自动采集方式 | 边界 |
+| `mode` | Capability | Description |
 | --- | --- | --- |
-| Codex | 官方 app-server `account/rateLimits/read` | 订阅的百分比窗口 |
-| Antigravity | CLI 1.3.3 的只读 `/usage` JSON | Gemini 与 Claude/GPT 各自共享短期、每周窗口；不启动模型对话 |
-| OpenRouter | `quotaSource: "openrouter"`，官方 `GET /api/v1/key` | 免费模型每日请求计数；美元用量单独展示，不能代替免费请求余额 |
-| Ark | `quotaSource: "ark-cli"`，官方 `arkcli usage plan --product coding-plan --format json` | 需要安装 CLI 并登录控制面；现有推理 API Key 不能代替登录。只提供窗口百分比 |
-| Claude | 正常请求的官方 `rate_limit_event`，包括实测 CLI 2.1.296 的 `unifiedWindows` | 被动采集窗口利用率和重置时间；没有额外调用模型来查询。未报告窗口保持未知 |
-| CodeBuddy | 暂无已核实的官方 CLI 账户余额查询 | `/cost` 和模型积分倍率不代表剩余额度；使用官方账户 Usage 页面 |
-| OpenCode Zen | 暂无已核实的 API Key 钱包余额查询 | Go 订阅的 usage 接口不代表 Zen 免费模型或钱包额度 |
+| `app-server` (default) | Read-only quota | Official RPC reads percentage windows. **Inference is unavailable** until a configuration with all tools disabled can be verified. |
+| `responses` | Inference | ChatGPT SIWC access token (`tokenEnv`), structured multi-turn history and system instructions. `sk-` API keys are rejected. The operator obtains and rotates tokens; automatic refresh is not implemented. |
+| `exec` | Inference | Official CLI **pinned to 0.157.1**, ChatGPT account login, read-only sandbox and explicitly disabled tools/skills/plugins/memory features. Single-turn requests. |
 
-Ark 的推理仍使用普通 `openai-compatible` adapter，额度采集独立配置；可用 `quotaCommand` 指定官方 `arkcli` 原生可执行文件路径。查询失败返回 `unknown` 和原因，不把登录/网络错误当作额度耗尽。官方快照默认缓存 60 秒；健康检查默认 3 秒，额度查询独立上限 10 秒，因此首次 CLI 查询可能增加几秒延迟。
+```json
+{
+  "id": "codex",
+  "type": "codex",
+  "mode": "exec",
+  "models": ["gpt-6-sol"],
+  "command": "codex",
+  "enabled": false,
+  "billingVerified": false
+}
+```
 
-本机已将官方 Ark CLI 1.0.37 安装到 `.tools/ark-cli`，核对包内 SHA-256 和 Windows 数字签名，并设置私有配置的 `quotaCommand`。控制面尚未登录；用户完成官方 SSO 登录后再刷新即可，不需要修改推理 adapter：
+## Operations
 
-~~~powershell
-& '.\.tools\ark-cli\node_modules\@volcengine\ark-cli\bin\arkcli-windows-amd64.exe' auth login volc-sso
-~~~
+Administrative endpoints all require the Admin Key:
 
-运行中的网关可以这样刷新并查看额度：
+| Endpoint | Description |
+| --- | --- |
+| `GET /admin/status` | Provider capabilities, quota snapshots, cooldown records and active leases. |
+| `POST /admin/quota` | Enter quota manually; `pool` enables shared quota pools, and `resetAt` uses Unix milliseconds. |
+| `POST /admin/quota/refresh` | Read-only quota collection with optional `provider` and `model`. By default, queries the first model of each enabled provider. No model calls; manual quota is not overwritten. |
+| `POST /admin/unblock` | Clear the specified provider/model's snapshot and cooldown, then collect again. |
 
-~~~powershell
+Automatic failure handling: quota exhaustion triggers a cooldown until the official reset time, or 60 seconds if unknown; rate limits follow `Retry-After`; authentication failures block the entire provider for 5 minutes. Only one recovery probe is allowed after cooldown expires. Concurrency leases left by a crashed process are cleaned up when they expire.
+
+Read and refresh quota:
+
+```powershell
 npm run quota
-# 指定供应商或模型组：
-node --env-file=.env.local scripts/quota.ts --provider antigravity --model claude-sonnet-4-6
-~~~
+node --env-file=.env.local scripts/quota.ts --provider ark
+node --env-file=.env.local scripts/quota.ts --provider antigravity --model gemini-3.8-flash-low
+```
 
-刷新结果中的 `quota` 是本次查询结果，`effectiveQuota` 是调度实际使用的快照；人工快照优先且不会被刷新覆盖。`balances` 只展示美元额度，不参与免费模型请求预算。管理接口需要独立 Admin Key。
+In the output, `quota` is the current query result, `effectiveQuota` is the cache actually used for routing, and `saved` indicates whether a new non-unknown snapshot was saved. Manual quota takes precedence and is not overwritten by official refreshes. Official snapshots are cached for 60 seconds by default. Normal requests attempt refresh when quota is missing, unknown or expired, and briefly attempt another refresh after a successful call. Claude only reads events already produced by actual requests; refresh commands do not send an extra conversation to obtain quota. Reading the same official observation does not extend its freshness.
 
-官方依据：[OpenRouter 额度字段](https://openrouter.ai/docs/api_reference/limits)、[Antigravity 只读命令更新](https://www.antigravity.google/docs/changelog#v1111)、[Ark 套餐查询](https://github.com/volcengine/ark-cli/blob/main/skills/arkcli-usage/references/arkcli-usage-plan.md)、[Claude SDK 限额事件](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/types.py)、[CodeBuddy Usage 页面](https://www.codebuddy.ai/docs/ide/Account/usage)、[Zen 官方 usage 路由](https://github.com/anomalyco/opencode/blob/dev/packages/console/app/src/routes/zen/go/v1/usage.ts)。
+Health checks and quota queries have separate time limits: by default, up to 3 seconds and 10 seconds respectively during routing, and up to 1 second for a best-effort refresh after a call. The total request timeout still applies. Query failures do not block a healthy provider; the result reports an unknown source and reason. Historical quota or cooldown records for removed providers may remain in SQLite, but they are excluded from routing and `/v1/models`.
+
+## Development and testing
+
+```powershell
+node --test tests/*.test.ts     # Local HTTP/SQLite/subprocess fixtures; no real accounts
+npm run typecheck               # Run npm install first for development dependencies
+npm run format:src
+npm run format:check
+```
+
+Adding a standard compatible API provider requires configuration only. For other protocols, implement the `Provider` interface in `src/types.ts` and register the adapter in `src/adapters/index.ts`. Extend the HTTP layer and scheduler only for features outside the existing message or event contracts. See [src/adapters/README.md](src/adapters/README.md) for the detailed contract and `docs/code-walkthrough.md` for the code walkthrough.
+
+## Current limitations
+
+- **Endpoint coverage**: `/v1/chat/completions` and `/v1/models` are available. There are no public `/v1/responses`, Embeddings, standalone image generation, audio transcription or file management endpoints. Codex `mode: responses` is an internal subscription path, not a client-facing Responses API.
+- **CLI capabilities**: Claude, CodeBuddy, Antigravity and Codex exec accept text requests with one user message and an optional preceding system instruction. Tools, multimodal content and generation parameters are unsupported. Explicit CLI requests return `unsupported`; `auto` filters by capabilities. Internal Codex Responses supports text multi-turn history but not these extension fields.
+- **Compatible API support**: forwarding is implemented for tools, structured output, multimodal messages, reasoning parameters and response extensions. Availability depends on the upstream model. The gateway does not execute tools, download media or add missing capabilities to models.
+- **Routing scope**: automatic routing uses only each provider's `models[0]`, without choosing other models within that provider. Explicit aliases do not fall back across providers. There is no sticky routing, so later `auto` requests may use a different model. Invalid parameters and unsupported requests do not trigger fallback, and providers cannot change after streaming begins.
+- **Quota is not an exact live balance**: official snapshots have caching and collection delays; percentage windows are not remaining token or request counts. Ark requires additional control-plane login, Claude requires observed response events, and official balance collection is not implemented for CodeBuddy or Agnes. Unknown quota remains eligible. Concurrent token budgets are conservative estimates; actual consumption is settled against valid upstream usage. USD key usage is not account wallet balance.
+- **Capacity and configuration changes**: request bodies are limited to 1 MiB, cumulative responses to 16 MiB and individual SSE frames to 1 MiB. `maxConcurrency` limits requests within this local gateway; it does not increase upstream quota or rate limits. Configuration and environment file changes require a restart.
+- **Local service scope**: loopback only, with no multi-tenancy, user isolation or built-in conversation storage. `available`/`doctor` does not guarantee connectivity, quota, model access or billing; `billingVerified` is an operator declaration. CLI deployment on POSIX and cleanup of child processes that resist SIGTERM have not been verified.
+- **Logging scope**: routine gateway status and error output does not record prompts, tokens, keys or raw upstream error bodies. Client-saved responses, independent CLI logs and manual verification reports in `.tools` have their own data retention scope.

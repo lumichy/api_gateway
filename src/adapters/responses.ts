@@ -2,7 +2,9 @@ import { GatewayError } from '../errors.ts';
 import { checkAbort, httpError, sse, validUsageCount } from './http.ts';
 import type { ChatRequest, ProviderEvent } from '../types.ts';
 import type { ProviderConfig } from './index.ts';
+import { requireTextRequest } from '../chat-request.ts';
 export function responsesBody(request: ChatRequest) {
+  requireTextRequest(request);
   const messages = request.messages;
   const system = messages[0]?.role === 'system' ? messages[0] : undefined;
   const input = system ? messages.slice(1) : messages;

@@ -57,8 +57,8 @@ test('gateway publishes slash aliases and falls back from exhausted opt-in API b
       res.writeHead(402);
       res.end('{"error":{"code":402}}');
     } else {
-      res.writeHead(200, { 'content-type': 'text/event-stream' });
-      res.end('data: {"choices":[{"delta":{"content":"API"}}]}\n\ndata: [DONE]\n\n');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"choices":[{"index":0,"message":{"role":"assistant","content":"API"},"finish_reason":"stop"}]}');
     }
   });
   await new Promise<void>((r) => upstream.listen(0, '127.0.0.1', r));
@@ -136,7 +136,7 @@ test('compatible HTTP preserves upstream model, history, bearer auth and streams
     for await (const part of req) body += part;
     seen = { url: req.url, auth: req.headers.authorization, body: JSON.parse(body) };
     res.writeHead(200, { 'content-type': 'text/event-stream' });
-    res.end('data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n');
+    res.end('data: {"choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   try {
@@ -149,14 +149,14 @@ test('compatible HTTP preserves upstream model, history, bearer auth and streams
         { role: 'assistant' as const, content: 'reply' },
         { role: 'user' as const, content: 'next' },
       ],
-      stream: false,
+      stream: true,
     };
     assert.equal(p.capabilities.history, true);
     assert.equal((await p.health()).available, true);
     assert.equal((await p.quota(request.model, new AbortController().signal)).source, 'unknown');
     assert.deepEqual(await Array.fromAsync(p.invoke(request, new AbortController().signal)), [
-      { type: 'text', text: 'OK' },
-      { type: 'done', finishReason: 'stop' },
+      { type: 'chat_chunk', body: { choices: [{ index: 0, delta: { content: 'OK' }, finish_reason: 'stop' }] } },
+      { type: 'done' },
     ]);
     assert.deepEqual(seen, {
       url: '/v1/chat/completions',
@@ -205,7 +205,7 @@ test('Ark forwards the configured endpoint and key like every compatible provide
   globalThis.fetch = async (input, options) => {
     url = String(input);
     authorization = new Headers(options?.headers).get('authorization') ?? '';
-    return new Response('data: [DONE]\n\n');
+    return new Response('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
   };
   try {
     const p = createProvider({

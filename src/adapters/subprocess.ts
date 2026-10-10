@@ -6,6 +6,7 @@ import { GatewayError } from '../errors.ts';
 import type { ChatRequest, ErrorKind } from '../types.ts';
 import type { ProviderConfig } from './index.ts';
 import { checkAbort } from './http.ts';
+import { requireTextRequest } from '../chat-request.ts';
 export function subscriptionEnvironment(type: 'codex' | 'claude'): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
@@ -145,6 +146,7 @@ export async function* processLines(
   }
 }
 export function singleTurn(request: ChatRequest) {
+  requireTextRequest(request);
   const messages = request.messages;
   const user = messages.at(-1);
   if (
@@ -156,7 +158,10 @@ export function singleTurn(request: ChatRequest) {
       'unsupported',
       'This CLI adapter accepts one user message with an optional leading system message; history and developer roles are unsupported',
     );
-  return { user: user.content, system: messages.length === 2 ? messages[0].content : undefined };
+  return {
+    user: user.content as string,
+    system: messages.length === 2 ? (messages[0].content as string) : undefined,
+  };
 }
 export function validateBootstrap(config: ProviderConfig) {
   const args = config.args ?? [];

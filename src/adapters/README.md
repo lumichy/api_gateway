@@ -7,12 +7,16 @@ Real providers default to disabled. Both `enabled:true` and `billingVerified:tru
 Source layout:
 
 - `codebuddy.ts`: CodeBuddy health, text Agent, denied tool catalog and invocation settings.
-- `openai-compatible.ts`: Bearer-key Chat Completions HTTP transport for all API providers. Endpoint/authentication checks, structured messages, streaming and cancellation; SSE parsing and HTTP error classification remain in `http.ts`.
+- `openai-compatible.ts`: Bearer-key Chat Completions HTTP transport for all API providers. Preserves request JSON and the client stream flag; endpoint/authentication checks and cancellation.
+- `compatible-response.ts`: Bounded native JSON/SSE responses, complete choices/deltas and provider extensions, detailed usage, terminal validation and in-band error classification. Tools are passed to the client, never executed by the gateway.
+- `../chat-request.ts`: Request skeleton and output budget validation, text-only adapter preflight, JSON input budget estimation.
 - `claude.ts`: Claude subscription health, safe-mode settings, version and initialization-auth checks. Managed-policy checks remain in `claude-policy.ts`.
 - `cli-stream.ts`: Shared print/stream-json arguments, bounded event parsing, tool rejection, terminal consistency and usage conversion. Provider-specific preflight and initialization checks are supplied by the adapter.
 - `subprocess.ts`: Shared process spawning, line limits, cancellation, temporary-directory cleanup, executable bootstrap validation and CLI helpers. It does not dispatch Claude or CodeBuddy requests.
 
 `index.ts` dispatches each provider to its own module. The CodeBuddy setup/login helper also imports its Agent flags from `codebuddy.ts`.
+
+The compatible API adapter advertises `capabilities.chat: true` as a transport capability, not a guarantee that every upstream model supports every parameter. It emits `chat_response` (complete nonstream JSON) or `chat_chunk` (one complete SSE JSON frame), followed by `done` for accounting. The server preserves the body while replacing its model with the gateway alias; it does not synthesize additional API choices or finish chunks. Text-only adapters retain `text`/`done` events and reject extended requests before health, quota or invocation. Once any API chunk is emitted, routing cannot fall back to another provider.
 
 Configuration:
 
@@ -39,7 +43,7 @@ Only environment-variable names belong in configuration; credential values do no
 | Path | Enable conditions | Request semantics | Quota |
 | --- | --- | --- | --- |
 | Demo | Enabled by default; no account | Local configured response | Manual remaining requests, null if omitted |
-| OpenAI compatible | Explicit enabled/billingVerified, baseUrl and apiKeyEnv | Structured text messages; slash-separated upstream models | Optional explicit quotaSource; inference transport stays generic; auto disabled by default |
+| OpenAI compatible | Explicit enabled/billingVerified, baseUrl and apiKeyEnv | Complete Chat Completions JSON: tools, tool results, multimodal messages, parameters and response extensions; slash-separated upstream models | Optional explicit quotaSource; inference transport stays generic; auto disabled by default |
 | Claude | Official CLI with documented flags, subscription login, verified billing for print mode | One user message, optionally one leading system message; history/developer rejected | Partial official rate_limit_event observations from existing requests; otherwise unknown |
 | Antigravity | Verified CLI 1.3.3 for quota, approved profile, subscription login | One user and optional leading system | Official read-only /usage, separate Gemini and third-party groups |
 | CodeBuddy | Official CLI, supported no-tools flags, subscription login and verified billing | One user with optional leading system; history/developer rejected | Unknown |

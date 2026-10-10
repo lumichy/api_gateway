@@ -13,6 +13,7 @@ import { openrouterQuota, unknownQuota } from './quota-telemetry.ts';
 import { antigravityQuota } from './antigravity-quota.ts';
 import { createClaudeQuotaTelemetry } from './claude-quota.ts';
 import { arkQuota } from './ark-quota.ts';
+import { requireTextRequest } from '../chat-request.ts';
 export type ProviderConfig = {
   id: string;
   type: 'openai-compatible' | 'codex' | 'claude' | 'codebuddy' | 'antigravity' | 'demo';
@@ -75,6 +76,7 @@ export function createProvider(config: ProviderConfig): Provider {
         config.type === 'codebuddy' ||
         config.type === 'antigravity',
       history: direct || config.type === 'demo' || http,
+      chat: http,
     },
   };
   const guard = (signal: AbortSignal) => {
@@ -89,6 +91,7 @@ export function createProvider(config: ProviderConfig): Provider {
   return {
     ...base,
     validate(request: ChatRequest) {
+      if (!http) requireTextRequest(request);
       if (direct) {
         responsesBody(request);
         return;

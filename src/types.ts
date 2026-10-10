@@ -1,8 +1,15 @@
-export type Message = { role: 'system' | 'developer' | 'user' | 'assistant'; content: string };
-export type ChatRequest = { model: string; messages: Message[]; stream: boolean };
+// JSON payload fields are intentionally open for compatible-provider extensions.
+export type ChatJSON = Record<string, any>;
+export type Message = ChatJSON & {
+  role: 'system' | 'developer' | 'user' | 'assistant' | 'tool' | 'function';
+  content?: string | ChatJSON[] | null;
+};
+export type ChatRequest = ChatJSON & { model: string; messages: Message[]; stream: boolean };
 export type Usage = { prompt_tokens: number; completion_tokens: number; total_tokens: number };
 export type ProviderEvent =
   | { type: 'text'; text: string }
+  | { type: 'chat_chunk'; body: ChatJSON }
+  | { type: 'chat_response'; body: ChatJSON }
   | { type: 'done'; usage?: Usage; finishReason?: 'stop' | 'length' };
 export type QuotaWindow = {
   name?: string;
@@ -29,7 +36,7 @@ export interface Provider {
   allowAuto?: boolean;
   priority: number;
   maxConcurrency: number;
-  capabilities: { system: boolean; history: boolean };
+  capabilities: { system: boolean; history: boolean; chat?: boolean };
   reservationCosts?: { requests: number; outputTokens: number; credits?: number };
   validate?(request: ChatRequest): void;
   health(signal?: AbortSignal): Promise<{ available: boolean; detail?: string }>;
